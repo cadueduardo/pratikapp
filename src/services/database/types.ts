@@ -88,6 +88,7 @@ export interface Post {
   status: PostStatus;
   postedAt: string | null;
   errorMessage: string | null;
+  platformVideoId: string | null; // ID do vídeo na plataforma (ex: TikTok publish_id, YouTube video_id)
   createdAt: string;
 }
 
@@ -97,12 +98,14 @@ export interface NewPost {
   status?: PostStatus;
   postedAt?: string | null;
   errorMessage?: string | null;
+  platformVideoId?: string | null;
 }
 
 export interface UpdatePost {
   status?: PostStatus;
   postedAt?: string | null;
   errorMessage?: string | null;
+  platformVideoId?: string | null;
 }
 
 export class SupabaseRepositoryError extends Error {

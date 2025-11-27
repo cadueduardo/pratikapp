@@ -58,6 +58,13 @@ serve(async (req) => {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+    // Obter token do usuário se fornecido (para chamadas internas das Edge Functions)
+    let userToken: string | null = null;
+    const authHeader = req.headers.get('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      userToken = authHeader.replace('Bearer ', '');
+    }
+
     // Buscar vídeos agendados que estão prontos para publicação
     const now = new Date().toISOString();
     const { data: videos, error: videosError } = await supabase
@@ -150,46 +157,242 @@ serve(async (req) => {
           `[process-scheduled-videos] Criados ${createdPosts?.length || 0} posts para o vídeo ${video.id}`,
         );
 
-        // Simular upload para cada plataforma
-        // TODO: Implementar upload real usando as APIs das redes sociais
+        // Fazer upload real para cada plataforma
+        let allPostsSuccessful = true;
+        let hasAnyPost = false;
+        
         for (const post of createdPosts || []) {
           const platform = platforms.find((p) => p.id === post.platform_id);
+          if (!platform) {
+            console.error(`[process-scheduled-videos] Plataforma não encontrada para post ${post.id}`);
+            continue;
+          }
+
+          hasAnyPost = true;
           console.log(
-            `[process-scheduled-videos] Simulando upload para ${platform?.name || 'plataforma desconhecida'}`,
+            `[process-scheduled-videos] Fazendo upload para ${platform.name} (post ${post.id})`,
           );
 
-          // Simular delay de upload
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          try {
+            let uploadResult: { success: boolean; videoId?: string; platformVideoId?: string; error?: string } | null = null;
 
-          // Atualizar post como publicado (simulado)
-          const { error: updatePostError } = await supabase
-            .from('posts')
-            .update({
-              status: 'posted',
-              posted_at: now,
-            })
-            .eq('id', post.id);
+            // Obter token do usuário para autenticação nas Edge Functions
+            // Preferir usar token do usuário quando disponível, senão usar service key com userId
+            const authToken = userToken || supabaseServiceKey;
 
-          if (updatePostError) {
-            console.error(
-              `[process-scheduled-videos] Erro ao atualizar post ${post.id}:`,
-              updatePostError,
-            );
+            // Chamar Edge Function apropriada baseado na plataforma
+            switch (platform.name.toLowerCase()) {
+              case 'tiktok': {
+                const uploadResponse = await fetch(`${supabaseUrl}/functions/v1/upload-to-tiktok`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                    apikey: supabaseServiceKey,
+                  },
+                  body: JSON.stringify({
+                    videoUrl: video.url_drive,
+                    title: video.title,
+                    privacyLevel: 'PUBLIC_TO_EVERYONE',
+                    platformId: platform.id,
+                    userId: video.user_id, // Passar userId para chamadas internas
+                  }),
+                });
+
+                if (uploadResponse.ok) {
+                  const data = await uploadResponse.json();
+                  uploadResult = {
+                    success: true,
+                    videoId: data.videoId,
+                    platformVideoId: data.platformVideoId,
+                  };
+                } else {
+                  const error = await uploadResponse.json();
+                  uploadResult = {
+                    success: false,
+                    error: error.error || 'Erro ao fazer upload para TikTok',
+                  };
+                }
+                break;
+              }
+              case 'youtube': {
+                const uploadResponse = await fetch(`${supabaseUrl}/functions/v1/upload-to-youtube`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                    apikey: supabaseServiceKey,
+                  },
+                  body: JSON.stringify({
+                    videoUrl: video.url_drive,
+                    title: video.title,
+                    description: video.description || undefined,
+                    privacyStatus: 'public',
+                    platformId: platform.id,
+                    userId: video.user_id, // Passar userId para chamadas internas
+                  }),
+                });
+
+                if (uploadResponse.ok) {
+                  const data = await uploadResponse.json();
+                  uploadResult = {
+                    success: true,
+                    videoId: data.videoId,
+                    platformVideoId: data.platformVideoId,
+                  };
+                } else {
+                  const error = await uploadResponse.json();
+                  uploadResult = {
+                    success: false,
+                    error: error.error || 'Erro ao fazer upload para YouTube',
+                  };
+                }
+                break;
+              }
+              case 'instagram':
+              case 'google-drive': {
+                // TODO: Implementar upload real para Instagram
+                console.log(`[process-scheduled-videos] Upload para ${platform.name} ainda não implementado`);
+                uploadResult = {
+                  success: false,
+                  error: `Upload para ${platform.name} ainda não implementado`,
+                };
+                break;
+              }
+              default: {
+                console.log(`[process-scheduled-videos] Plataforma ${platform.name} não suportada para upload`);
+                uploadResult = {
+                  success: false,
+                  error: `Plataforma ${platform.name} não suportada`,
+                };
+              }
+            }
+
+            // Atualizar post com resultado do upload
+            if (uploadResult?.success) {
+              const { error: updatePostError } = await supabase
+                .from('posts')
+                .update({
+                  status: 'posted',
+                  posted_at: now,
+                  platform_video_id: uploadResult.platformVideoId || uploadResult.videoId || null,
+                })
+                .eq('id', post.id);
+
+              if (updatePostError) {
+                console.error(
+                  `[process-scheduled-videos] Erro ao atualizar post ${post.id}:`,
+                  updatePostError,
+                );
+                allPostsSuccessful = false;
+              } else {
+                console.log(`[process-scheduled-videos] Post ${post.id} publicado com sucesso`);
+              }
+            } else {
+              // Marcar post como failed
+              allPostsSuccessful = false;
+              const { error: updatePostError } = await supabase
+                .from('posts')
+                .update({
+                  status: 'failed',
+                  error_message: uploadResult?.error || 'Erro desconhecido',
+                })
+                .eq('id', post.id);
+
+              if (updatePostError) {
+                console.error(
+                  `[process-scheduled-videos] Erro ao atualizar post ${post.id}:`,
+                  updatePostError,
+                );
+              } else {
+                console.error(`[process-scheduled-videos] Post ${post.id} falhou: ${uploadResult?.error}`);
+              }
+            }
+          } catch (uploadError) {
+            allPostsSuccessful = false;
+            const errorMessage = uploadError instanceof Error ? uploadError.message : 'Erro desconhecido';
+            console.error(`[process-scheduled-videos] Erro ao fazer upload para ${platform.name}:`, errorMessage);
+
+            // Marcar post como failed
+            await supabase
+              .from('posts')
+              .update({
+                status: 'failed',
+                error_message: errorMessage,
+              })
+              .eq('id', post.id);
           }
         }
 
-        // Atualizar status do vídeo para 'posted'
-        const { error: finalUpdateError } = await supabase
-          .from('videos')
-          .update({ status: 'posted', updated_at: now })
-          .eq('id', video.id);
+        // Atualizar status do vídeo baseado no resultado dos uploads
+        if (hasAnyPost) {
+          // Verificar se todos os posts foram publicados com sucesso
+          const { data: finalPosts, error: postsCheckError } = await supabase
+            .from('posts')
+            .select('status')
+            .eq('video_id', video.id);
 
-        if (finalUpdateError) {
-          throw finalUpdateError;
+          if (!postsCheckError && finalPosts) {
+            const allPosted = finalPosts.every((p) => p.status === 'posted');
+            const anyFailed = finalPosts.some((p) => p.status === 'failed');
+
+            if (allPosted && finalPosts.length > 0) {
+              // Todos os posts foram publicados com sucesso
+              const { error: finalUpdateError } = await supabase
+                .from('videos')
+                .update({ status: 'posted', updated_at: now })
+                .eq('id', video.id);
+
+              if (finalUpdateError) {
+                throw finalUpdateError;
+              }
+              processedCount++;
+              console.log(`[process-scheduled-videos] Vídeo ${video.id} processado com sucesso - todos os posts publicados`);
+            } else if (anyFailed) {
+              // Algum post falhou
+              const { error: finalUpdateError } = await supabase
+                .from('videos')
+                .update({ status: 'failed', updated_at: now })
+                .eq('id', video.id);
+
+              if (finalUpdateError) {
+                throw finalUpdateError;
+              }
+              console.log(`[process-scheduled-videos] Vídeo ${video.id} falhou - alguns posts não foram publicados`);
+            } else {
+              // Ainda processando
+              const { error: finalUpdateError } = await supabase
+                .from('videos')
+                .update({ status: 'processing', updated_at: now })
+                .eq('id', video.id);
+
+              if (finalUpdateError) {
+                throw finalUpdateError;
+              }
+              console.log(`[process-scheduled-videos] Vídeo ${video.id} ainda em processamento`);
+            }
+          } else {
+            // Se não conseguir verificar posts, manter como processing
+            const { error: finalUpdateError } = await supabase
+              .from('videos')
+              .update({ status: 'processing', updated_at: now })
+              .eq('id', video.id);
+
+            if (finalUpdateError) {
+              throw finalUpdateError;
+            }
+          }
+        } else {
+          // Nenhum post foi criado, marcar como failed
+          const { error: finalUpdateError } = await supabase
+            .from('videos')
+            .update({ status: 'failed', updated_at: now })
+            .eq('id', video.id);
+
+          if (finalUpdateError) {
+            throw finalUpdateError;
+          }
         }
-
-        processedCount++;
-        console.log(`[process-scheduled-videos] Vídeo ${video.id} processado com sucesso`);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
         console.error(`[process-scheduled-videos] Erro ao processar vídeo ${video.id}:`, errorMessage);

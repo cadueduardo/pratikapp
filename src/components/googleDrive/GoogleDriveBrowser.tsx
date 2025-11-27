@@ -259,6 +259,18 @@ export const GoogleDriveBrowser = ({
                         src={thumbnailUrl}
                         alt={video.name}
                         loading="lazy"
+                        onError={(e) => {
+                          // Se a imagem falhar ao carregar, mostrar ícone padrão
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = 'none';
+                          const parent = target.parentElement;
+                          if (parent) {
+                            const fallback = document.createElement('div');
+                            fallback.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 150px; background-color: rgba(0,0,0,0.04); border-radius: 4px;';
+                            fallback.innerHTML = '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>';
+                            parent.appendChild(fallback);
+                          }
+                        }}
                         style={{
                           width: '100%',
                           height: 150,

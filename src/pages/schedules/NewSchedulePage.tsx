@@ -1,4 +1,5 @@
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import PublishIcon from '@mui/icons-material/Publish';
 import {
   Alert,
   Box,
@@ -55,6 +56,7 @@ export const NewSchedulePage = () => {
   const { showSuccess, showError } = useNotification();
   const [loading, setLoading] = useState(false);
   const [loadingVideo, setLoadingVideo] = useState(false);
+  const [publishingNow, setPublishingNow] = useState(false);
   const isEditing = Boolean(videoId);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -88,7 +90,10 @@ export const NewSchedulePage = () => {
       setIsGoogleDriveConnected(connected);
     } catch (err) {
       setIsGoogleDriveConnected(false);
-      console.error('[NewSchedulePage] Erro ao verificar conexão do Google Drive:', err);
+      // Não logar erro repetidamente - apenas em modo de desenvolvimento
+      if (import.meta.env.DEV) {
+        console.warn('[NewSchedulePage] Google Drive não conectado ou token expirado');
+      }
     } finally {
       setCheckingGoogleDrive(false);
     }
@@ -367,7 +372,8 @@ export const NewSchedulePage = () => {
     if (!urlDrive.trim()) {
       errors.urlDrive = 'Informe a URL do Google Drive.';
     } else if (!isValidGoogleDriveUrl(urlDrive.trim())) {
-      errors.urlDrive = 'Informe uma URL válida do Google Drive (ex: https://drive.google.com/file/d/...)';
+      errors.urlDrive =
+        'Informe uma URL válida do Google Drive. Exemplo: https://drive.google.com/file/d/ID_DO_ARQUIVO/view';
     }
 
     const hasDate = scheduledDate.trim().length > 0;
@@ -546,6 +552,64 @@ export const NewSchedulePage = () => {
     console.log('Arquivo selecionado:', file.name, file.type);
     // TODO: Implementar upload de arquivo local
   }, []);
+
+  const handlePublishNow = useCallback(async () => {
+    if (!user?.id || !videoId) return;
+
+    try {
+      setPublishingNow(true);
+
+      // Atualizar o vídeo para ser processado agora
+      const now = new Date().toISOString();
+      await videosRepository.update(videoId, {
+        scheduledDate: now,
+        status: 'pending',
+      });
+
+      // Chamar a Edge Function para processar o vídeo
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error('Configuração do Supabase não encontrada.');
+      }
+
+      const { supabaseClient } = await import('@/services/supabaseClient');
+      const {
+        data: { session },
+      } = await supabaseClient.auth.getSession();
+
+      if (!session) {
+        throw new Error('Usuário não autenticado.');
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/process-scheduled-videos`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erro ao processar vídeo');
+      }
+
+      showSuccess('Vídeo enviado para publicação! Aguarde alguns instantes.');
+      
+      // Redirecionar para a página de detalhes após um momento
+      setTimeout(() => {
+        navigate(`/videos/${videoId}`);
+      }, 1500);
+    } catch (err) {
+      showError(mapSupabaseError(err instanceof Error ? err : undefined));
+    } finally {
+      setPublishingNow(false);
+    }
+  }, [user?.id, videoId, navigate, showSuccess, showError]);
 
   const handleGoogleDriveSelectClick = useCallback(async () => {
     if (!user?.id) {
@@ -893,14 +957,28 @@ export const NewSchedulePage = () => {
 
                 {/* Actions */}
                 <Stack direction="row" spacing={2} justifyContent="flex-end" sx={{ mt: 2 }}>
-                  <Button onClick={() => navigate('/schedules')} disabled={loading}>
+                  <Button onClick={() => navigate('/schedules')} disabled={loading || publishingNow}>
                     Cancelar
                   </Button>
+                  {isEditing && status === 'scheduled' && (
+                    <LoadingButton
+                      variant="outlined"
+                      color="primary"
+                      startIcon={<PublishIcon />}
+                      onClick={handlePublishNow}
+                      loading={publishingNow}
+                      loadingText="Publicando..."
+                      disabled={loading || loadingVideo}
+                    >
+                      Publicar Agora
+                    </LoadingButton>
+                  )}
                   <LoadingButton
                     variant="contained"
                     onClick={handleSave}
                     loading={loading || loadingVideo}
                     loadingText={isEditing ? 'Salvando...' : 'Criando...'}
+                    disabled={publishingNow}
                   >
                     {isEditing ? 'Salvar Alterações' : 'Criar Agendamento'}
                   </LoadingButton>

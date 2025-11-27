@@ -24,37 +24,101 @@ interface UploadResult {
  * @param videoUrl - URL do vídeo (Google Drive ou outro serviço)
  * @param title - Título do vídeo
  * @param description - Descrição do vídeo
- * @param accessToken - Token de acesso OAuth (será obtido do banco no futuro)
+ * @param tags - Tags do vídeo (opcional)
+ * @param platformId - ID da plataforma YouTube no banco de dados
+ * @param privacyStatus - Status de privacidade (opcional)
+ * @param categoryId - ID da categoria do YouTube (opcional)
  * @returns Promise com resultado do upload
  */
 export const uploadToYouTube = async (
   videoUrl: string,
   title: string,
   description?: string,
-  accessToken?: string,
+  tags?: string[],
+  platformId?: string,
+  privacyStatus: 'private' | 'unlisted' | 'public' = 'public',
+  categoryId?: string,
 ): Promise<UploadResult> => {
-  console.log('[YouTube] Iniciando upload...', {
-    videoUrl,
-    title,
-    description,
-    hasToken: !!accessToken,
-  });
+  try {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-  // TODO: Implementar upload real usando YouTube Data API v3
-  // 1. Autenticar com OAuth 2.0
-  // 2. Fazer upload do vídeo usando resumable upload
-  // 3. Retornar ID do vídeo publicado
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return {
+        success: false,
+        error: 'Configuração do Supabase não encontrada',
+      };
+    }
 
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      console.log('[YouTube] Upload simulado concluído');
-      resolve({
-        success: true,
-        videoId: 'mock_youtube_video_id',
-        platformVideoId: 'yt_mock_123',
-      });
-    }, 2000);
-  });
+    if (!platformId) {
+      return {
+        success: false,
+        error: 'platformId é obrigatório',
+      };
+    }
+
+    // Obter sessão atual
+    const { supabaseClient } = await import('./supabaseClient');
+    const {
+      data: { session },
+    } = await supabaseClient.auth.getSession();
+
+    if (!session) {
+      return {
+        success: false,
+        error: 'Usuário não autenticado',
+      };
+    }
+
+    console.log('[YouTube] Iniciando upload...', {
+      videoUrl,
+      title,
+      platformId,
+    });
+
+    // Chamar Edge Function para fazer upload
+    const response = await fetch(`${supabaseUrl}/functions/v1/upload-to-youtube`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: supabaseAnonKey,
+      },
+      body: JSON.stringify({
+        videoUrl,
+        title,
+        description,
+        tags,
+        privacyStatus,
+        categoryId,
+        platformId,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('[YouTube] Erro no upload:', error);
+      return {
+        success: false,
+        error: error.error || 'Erro ao fazer upload para o YouTube',
+      };
+    }
+
+    const data = await response.json();
+    console.log('[YouTube] Upload concluído com sucesso:', data);
+
+    return {
+      success: true,
+      videoId: data.videoId,
+      platformVideoId: data.platformVideoId,
+    };
+  } catch (error) {
+    console.error('[YouTube] Erro ao fazer upload:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao fazer upload',
+    };
+  }
 };
 
 /**
@@ -95,37 +159,98 @@ export const uploadToInstagram = async (
 
 /**
  * Faz upload de um vídeo para o TikTok
- * @param videoUrl - URL do vídeo
+ * @param videoUrl - URL do vídeo (Google Drive ou outro)
  * @param title - Título do vídeo
- * @param accessToken - Token de acesso (TikTok Marketing API)
+ * @param description - Descrição do vídeo
+ * @param platformId - ID da plataforma TikTok no banco de dados
+ * @param privacyLevel - Nível de privacidade (opcional)
  * @returns Promise com resultado do upload
  */
 export const uploadToTikTok = async (
   videoUrl: string,
   title?: string,
-  accessToken?: string,
+  description?: string,
+  platformId?: string,
+  privacyLevel: 'PUBLIC_TO_EVERYONE' | 'MUTUAL_FOLLOW_FRIEND' | 'SELF_ONLY' = 'PUBLIC_TO_EVERYONE',
 ): Promise<UploadResult> => {
-  console.log('[TikTok] Iniciando upload...', {
-    videoUrl,
-    title,
-    hasToken: !!accessToken,
-  });
+  try {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-  // TODO: Implementar upload real usando TikTok Marketing API
-  // 1. Autenticar com TikTok OAuth
-  // 2. Fazer upload do vídeo
-  // 3. Publicar o vídeo
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return {
+        success: false,
+        error: 'Configuração do Supabase não encontrada',
+      };
+    }
 
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      console.log('[TikTok] Upload simulado concluído');
-      resolve({
-        success: true,
-        videoId: 'mock_tiktok_video_id',
-        platformVideoId: 'tt_mock_123',
-      });
-    }, 2000);
-  });
+    if (!platformId) {
+      return {
+        success: false,
+        error: 'platformId é obrigatório',
+      };
+    }
+
+    // Obter sessão atual
+    const { supabaseClient } = await import('./supabaseClient');
+    const {
+      data: { session },
+    } = await supabaseClient.auth.getSession();
+
+    if (!session) {
+      return {
+        success: false,
+        error: 'Usuário não autenticado',
+      };
+    }
+
+    console.log('[TikTok] Iniciando upload...', {
+      videoUrl,
+      title,
+      platformId,
+    });
+
+    // Chamar Edge Function para fazer upload
+    const response = await fetch(`${supabaseUrl}/functions/v1/upload-to-tiktok`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: supabaseAnonKey,
+      },
+      body: JSON.stringify({
+        videoUrl,
+        title: title || 'Vídeo do PratikApp',
+        description,
+        privacyLevel,
+        platformId,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('[TikTok] Erro no upload:', error);
+      return {
+        success: false,
+        error: error.error || 'Erro ao fazer upload para o TikTok',
+      };
+    }
+
+    const data = await response.json();
+    console.log('[TikTok] Upload concluído com sucesso:', data);
+
+    return {
+      success: true,
+      videoId: data.videoId,
+      platformVideoId: data.platformVideoId,
+    };
+  } catch (error) {
+    console.error('[TikTok] Erro ao fazer upload:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Erro desconhecido ao fazer upload',
+    };
+  }
 };
 
 /**

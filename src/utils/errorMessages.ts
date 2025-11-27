@@ -16,6 +16,11 @@ export const ErrorMessages = {
   VIDEO_UPDATE_ERROR: 'Erro ao atualizar agendamento. Tente novamente.',
   VIDEO_DELETE_ERROR: 'Erro ao remover agendamento. Tente novamente.',
   VIDEO_LOAD_ERROR: 'Erro ao carregar agendamentos. Tente recarregar a página.',
+  VIDEO_INVALID_URL: 'URL do Google Drive inválida. Verifique se o link está correto.',
+  VIDEO_NO_PLATFORM_SELECTED: 'Selecione pelo menos uma plataforma para publicação.',
+  VIDEO_INVALID_DATE: 'Data de agendamento inválida. Verifique a data e hora selecionadas.',
+  VIDEO_PAST_DATE: 'A data de agendamento não pode ser no passado.',
+  VIDEO_FUTURE_DATE: 'A data de agendamento não pode ser mais de 1 ano no futuro.',
 
   // Plataformas
   PLATFORM_NOT_FOUND: 'Plataforma não encontrada.',
@@ -23,9 +28,14 @@ export const ErrorMessages = {
   PLATFORM_UPDATE_ERROR: 'Erro ao atualizar plataforma. Tente novamente.',
   PLATFORM_DELETE_ERROR: 'Erro ao remover plataforma. Tente novamente.',
   PLATFORM_LOAD_ERROR: 'Erro ao carregar plataformas. Tente recarregar a página.',
+  PLATFORM_NOT_CONNECTED: 'Plataforma não conectada. Conecte sua conta primeiro.',
+  PLATFORM_TOKEN_EXPIRED: 'Token de acesso expirado. Reconecte sua conta.',
+  PLATFORM_UPLOAD_ERROR: 'Erro ao fazer upload para a plataforma. Verifique sua conexão e tente novamente.',
 
   // Posts
   POST_LOAD_ERROR: 'Erro ao carregar postagens. Tente recarregar a página.',
+  POST_UPLOAD_FAILED: 'Falha ao fazer upload do vídeo. Verifique as configurações da plataforma.',
+  POST_PROCESSING: 'Vídeo está sendo processado. Aguarde alguns instantes.',
 
   // Perfil
   PROFILE_UPDATE_ERROR: 'Erro ao atualizar perfil. Tente novamente.',

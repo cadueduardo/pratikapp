@@ -6,6 +6,7 @@ import FilterListIcon from '@mui/icons-material/FilterList';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import SortIcon from '@mui/icons-material/Sort';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import PublishIcon from '@mui/icons-material/Publish';
 import {
   Box,
   Button,
@@ -43,8 +44,8 @@ import {
 } from '@/components/common';
 import { GoogleDriveBrowser } from '@/components/googleDrive/GoogleDriveBrowser';
 import { useAuth } from '@/hooks/useAuth';
-import { platformsRepository, videosRepository } from '@/services/database';
-import type { Platform, Video, VideoStatus } from '@/services/database/types';
+import { platformsRepository, postsRepository, videosRepository } from '@/services/database';
+import type { Platform, Post, Video, VideoStatus } from '@/services/database/types';
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { extractFileIdFromUrl, getFileMetadata, getThumbnailUrl } from '@/services/googleDrive';
 import { mapSupabaseError } from '@/utils/errorMessages';
@@ -58,6 +59,8 @@ export const SchedulesPage = () => {
   const { showSuccess, showError } = useNotification();
   const [loading, setLoading] = useState(false);
   const [videos, setVideos] = useState<Video[]>([]);
+  const [videoPosts, setVideoPosts] = useState<Record<string, Post[]>>({});
+  const [videoThumbnails, setVideoThumbnails] = useState<Record<string, string | null>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<VideoStatus | 'all'>('all');
   const [sortBy, setSortBy] = useState<'scheduledDate' | 'title' | 'createdAt' | 'status'>(
@@ -66,6 +69,7 @@ export const SchedulesPage = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [videoToDelete, setVideoToDelete] = useState<string | null>(null);
+  const [publishingVideoId, setPublishingVideoId] = useState<string | null>(null);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [googleDriveBrowserOpen, setGoogleDriveBrowserOpen] = useState(false);
@@ -120,6 +124,41 @@ export const SchedulesPage = () => {
       setLoading(true);
       const userVideos = await videosRepository.listByUser(user.id);
       setVideos(userVideos);
+
+      // Carregar posts e thumbnails para cada vídeo
+      const postsMap: Record<string, Post[]> = {};
+      const thumbnailsMap: Record<string, string | null> = {};
+      await Promise.all(
+        userVideos.map(async (video) => {
+          try {
+            const posts = await postsRepository.listByVideo(video.id);
+            postsMap[video.id] = posts;
+          } catch {
+            // Ignorar erros ao carregar posts
+            postsMap[video.id] = [];
+          }
+
+          // Buscar thumbnail do vídeo
+          if (video.urlDrive && isValidGoogleDriveUrl(video.urlDrive)) {
+            try {
+              const fileId = extractFileIdFromUrl(video.urlDrive);
+              if (fileId) {
+                const metadata = await getFileMetadata(user.id, fileId);
+                if (metadata?.thumbnailLink) {
+                  thumbnailsMap[video.id] = getThumbnailUrl(metadata.thumbnailLink, 'low');
+                } else {
+                  thumbnailsMap[video.id] = null;
+                }
+              }
+            } catch {
+              // Ignorar erros ao buscar thumbnail
+              thumbnailsMap[video.id] = null;
+            }
+          }
+        }),
+      );
+      setVideoPosts(postsMap);
+      setVideoThumbnails(thumbnailsMap);
     } catch (err) {
       showError(mapSupabaseError(err instanceof Error ? err : undefined));
     } finally {
@@ -349,6 +388,67 @@ export const SchedulesPage = () => {
     setDeleteConfirmOpen(false);
     setVideoToDelete(null);
   }, []);
+
+  const handlePublishNow = useCallback(
+    async (videoId: string) => {
+      if (!user?.id) return;
+
+      try {
+        setPublishingVideoId(videoId);
+
+        // Atualizar o vídeo para ser processado agora
+        const now = new Date().toISOString();
+        await videosRepository.update(videoId, {
+          scheduledDate: now,
+          status: 'pending',
+        });
+
+        // Chamar a Edge Function para processar o vídeo
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+        if (!supabaseUrl || !supabaseAnonKey) {
+          throw new Error('Configuração do Supabase não encontrada.');
+        }
+
+        const { supabaseClient } = await import('@/services/supabaseClient');
+        const {
+          data: { session },
+        } = await supabaseClient.auth.getSession();
+
+        if (!session) {
+          throw new Error('Usuário não autenticado.');
+        }
+
+        const response = await fetch(`${supabaseUrl}/functions/v1/process-scheduled-videos`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+            apikey: supabaseAnonKey,
+          },
+          body: JSON.stringify({}),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Erro ao processar vídeo');
+        }
+
+        showSuccess('Vídeo enviado para publicação! Aguarde alguns instantes.');
+        
+        // Aguardar um pouco e recarregar os vídeos
+        setTimeout(() => {
+          loadVideos();
+        }, 2000);
+      } catch (err) {
+        showError(mapSupabaseError(err instanceof Error ? err : undefined));
+      } finally {
+        setPublishingVideoId(null);
+      }
+    },
+    [user?.id, loadVideos, showSuccess, showError],
+  );
 
   const handleGoogleDriveSelect = useCallback(async (file: GoogleDriveFile) => {
     // Preencher URL do Google Drive
@@ -621,8 +721,36 @@ export const SchedulesPage = () => {
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'flex-start',
+                            gap: 2,
                           }}
                         >
+                          {/* Thumbnail do vídeo */}
+                          {videoThumbnails[video.id] && (
+                            <Box
+                              sx={{
+                                width: 120,
+                                height: 90,
+                                borderRadius: 1,
+                                overflow: 'hidden',
+                                flexShrink: 0,
+                                backgroundColor: 'grey.200',
+                              }}
+                            >
+                              <img
+                                src={videoThumbnails[video.id]!}
+                                alt={video.title}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'cover',
+                                }}
+                                onError={(e) => {
+                                  // Ocultar imagem se falhar ao carregar
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            </Box>
+                          )}
                           <Box sx={{ flex: 1 }}>
                             <Typography variant="h6" fontWeight={600}>
                               {video.title}
@@ -644,10 +772,57 @@ export const SchedulesPage = () => {
                                 })}
                               </Typography>
                             )}
+                            {/* Exibir status de posts por plataforma */}
+                            {videoPosts[video.id] && videoPosts[video.id].length > 0 && (
+                              <Box sx={{ mt: 1.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
+                                  Status por plataforma:
+                                </Typography>
+                                <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.5}>
+                                  {videoPosts[video.id].map((post) => {
+                                    const platform = availablePlatforms.find((p) => p.id === post.platformId);
+                                    const platformInfo = platform ? getPlatformInfo(platform.name) : null;
+                                    return (
+                                      <Chip
+                                        key={post.id}
+                                        label={`${platformInfo?.displayName || 'Plataforma'}: ${post.status === 'posted' ? 'Publicado' : post.status === 'failed' ? 'Falhou' : post.status === 'uploading' ? 'Enviando' : 'Pendente'}`}
+                                        size="small"
+                                        color={
+                                          post.status === 'posted'
+                                            ? 'success'
+                                            : post.status === 'failed'
+                                              ? 'error'
+                                              : post.status === 'uploading'
+                                                ? 'warning'
+                                                : 'default'
+                                        }
+                                        variant="outlined"
+                                      />
+                                    );
+                                  })}
+                                </Stack>
+                              </Box>
+                            )}
                           </Box>
                           <StatusChip status={video.status} />
                         </Box>
                         <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+                          {video.status === 'scheduled' && (
+                            <Tooltip title="Publicar vídeo agora, mesmo que esteja agendado para o futuro">
+                              <span>
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  color="primary"
+                                  startIcon={<PublishIcon />}
+                                  onClick={() => handlePublishNow(video.id)}
+                                  disabled={loading || publishingVideoId === video.id}
+                                >
+                                  {publishingVideoId === video.id ? 'Publicando...' : 'Publicar Agora'}
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          )}
                           <Tooltip title="Ver informações detalhadas do vídeo">
                             <span>
                               <Button
@@ -709,8 +884,36 @@ export const SchedulesPage = () => {
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'flex-start',
+                            gap: 2,
                           }}
                         >
+                          {/* Thumbnail do vídeo */}
+                          {videoThumbnails[video.id] && (
+                            <Box
+                              sx={{
+                                width: 120,
+                                height: 90,
+                                borderRadius: 1,
+                                overflow: 'hidden',
+                                flexShrink: 0,
+                                backgroundColor: 'grey.200',
+                              }}
+                            >
+                              <img
+                                src={videoThumbnails[video.id]!}
+                                alt={video.title}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'cover',
+                                }}
+                                onError={(e) => {
+                                  // Ocultar imagem se falhar ao carregar
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            </Box>
+                          )}
                           <Box sx={{ flex: 1 }}>
                             <Typography variant="h6" fontWeight={600}>
                               {video.title}
@@ -785,8 +988,36 @@ export const SchedulesPage = () => {
                             display: 'flex',
                             justifyContent: 'space-between',
                             alignItems: 'flex-start',
+                            gap: 2,
                           }}
                         >
+                          {/* Thumbnail do vídeo */}
+                          {videoThumbnails[video.id] && (
+                            <Box
+                              sx={{
+                                width: 120,
+                                height: 90,
+                                borderRadius: 1,
+                                overflow: 'hidden',
+                                flexShrink: 0,
+                                backgroundColor: 'grey.200',
+                              }}
+                            >
+                              <img
+                                src={videoThumbnails[video.id]!}
+                                alt={video.title}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit: 'cover',
+                                }}
+                                onError={(e) => {
+                                  // Ocultar imagem se falhar ao carregar
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                }}
+                              />
+                            </Box>
+                          )}
                           <Box sx={{ flex: 1 }}>
                             <Typography variant="h6" fontWeight={600}>
                               {video.title}

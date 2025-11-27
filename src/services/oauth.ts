@@ -231,21 +231,29 @@ export const initiateOAuthPopup = (
     window.addEventListener('message', messageHandler);
 
     // Verificar se o popup foi fechado
+    // Usar try-catch para evitar erros de Cross-Origin-Opener-Policy
     checkClosed = setInterval(() => {
-      if (popup.closed) {
-        if (checkClosed) clearInterval(checkClosed);
-        if (timeoutId) clearTimeout(timeoutId);
-        window.removeEventListener('message', messageHandler);
-        
-        // Verificar se a autenticação foi bem-sucedida verificando o sessionStorage
-        const successKey = `oauth_success_${platform}`;
-        const success = sessionStorage.getItem(successKey);
-        sessionStorage.removeItem(successKey);
-        
-        if (success === 'true') {
-          resolve({ success: true });
-        } else {
-          resolve({ success: false, error: 'Autenticação cancelada' });
+      try {
+        if (popup.closed) {
+          if (checkClosed) clearInterval(checkClosed);
+          if (timeoutId) clearTimeout(timeoutId);
+          window.removeEventListener('message', messageHandler);
+          
+          // Verificar se a autenticação foi bem-sucedida verificando o sessionStorage
+          const successKey = `oauth_success_${platform}`;
+          const success = sessionStorage.getItem(successKey);
+          sessionStorage.removeItem(successKey);
+          
+          if (success === 'true') {
+            resolve({ success: true });
+          } else {
+            resolve({ success: false, error: 'Autenticação cancelada' });
+          }
+        }
+      } catch (error) {
+        // Ignorar erros de COOP - usar apenas postMessage
+        if (import.meta.env.DEV) {
+          console.warn('[OAuth] Erro ao verificar popup (ignorado):', error);
         }
       }
     }, 500);
@@ -387,21 +395,52 @@ export const exchangeCodeForTokens = async (
 
 /**
  * Atualiza um token de acesso usando refresh token
+ * @param platform - Plataforma OAuth
+ * @param refreshToken - Refresh token
+ * @param platformId - ID da plataforma no banco de dados
+ * @returns Promise com novos tokens ou erro
  */
 export const refreshAccessToken = async (
   platform: PlatformType,
   refreshToken: string,
+  platformId: string,
 ): Promise<OAuthResult> => {
   try {
-    // TODO: Implementar via Edge Function
-    const response = await fetch('/api/oauth/refresh', {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return {
+        success: false,
+        error: 'Configuração do Supabase não encontrada',
+      };
+    }
+
+    // Obter sessão atual
+    const { supabaseClient } = await import('./supabaseClient');
+    const {
+      data: { session },
+    } = await supabaseClient.auth.getSession();
+
+    if (!session) {
+      return {
+        success: false,
+        error: 'Usuário não autenticado',
+      };
+    }
+
+    // Chamar Edge Function para renovar token
+    const response = await fetch(`${supabaseUrl}/functions/v1/refresh-oauth-token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: supabaseAnonKey,
       },
       body: JSON.stringify({
         platform,
         refreshToken,
+        platformId,
       }),
     });
 
@@ -419,9 +458,9 @@ export const refreshAccessToken = async (
       tokens: {
         accessToken: data.access_token,
         refreshToken: data.refresh_token || refreshToken,
-        expiresAt: data.expires_in
+        expiresAt: data.expires_at || (data.expires_in
           ? Date.now() + data.expires_in * 1000
-          : undefined,
+          : undefined),
         tokenType: data.token_type || 'Bearer',
       },
     };

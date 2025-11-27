@@ -42,6 +42,11 @@ export default defineConfig({
           },
         ],
       },
+      // Corrigir problema de manifest
+      strategies: 'generateSW',
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+      },
     }),
   ],
   resolve: {

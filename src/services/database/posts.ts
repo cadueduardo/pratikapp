@@ -16,6 +16,7 @@ const mapPost = (row: PostRow): Post => ({
   status: row.status as Post['status'],
   postedAt: row.posted_at,
   errorMessage: row.error_message,
+  platformVideoId: (row as any).platform_video_id || null,
   createdAt: row.created_at,
 });
 
@@ -50,7 +51,8 @@ export const postsRepository = {
       status: payload.status ?? 'pending',
       posted_at: payload.postedAt ?? null,
       error_message: payload.errorMessage ?? null,
-    };
+      platform_video_id: payload.platformVideoId ?? null,
+    } as any; // Usar 'as any' temporariamente até o tipo do Supabase ser atualizado
 
     const response = await supabaseClient.from('posts').insert(insertPayload).select('*').single();
 
@@ -72,6 +74,9 @@ export const postsRepository = {
     }
     if (payload.errorMessage !== undefined) {
       updates.error_message = payload.errorMessage ?? null;
+    }
+    if (payload.platformVideoId !== undefined) {
+      (updates as any).platform_video_id = payload.platformVideoId ?? null;
     }
 
     if (Object.keys(updates).length === 0) {

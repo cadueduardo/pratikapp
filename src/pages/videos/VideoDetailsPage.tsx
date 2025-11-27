@@ -1,6 +1,7 @@
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import EditIcon from '@mui/icons-material/Edit';
 import LinkIcon from '@mui/icons-material/Link';
+import PublishIcon from '@mui/icons-material/Publish';
 import {
   Box,
   Button,
@@ -12,11 +13,13 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { StatusChip, useNotification } from '@/components/common';
+import { LoadingButton, StatusChip, useNotification } from '@/components/common';
 import { useVideoDetails } from '@/hooks/useVideoDetails';
+import { videosRepository } from '@/services/database';
+import { mapSupabaseError } from '@/utils/errorMessages';
 
 const getPlatformName = (platformId: string, platforms: Array<{ id: string; name: string }>) => {
   return platforms.find((p) => p.id === platformId)?.name || 'Plataforma desconhecida';
@@ -25,14 +28,73 @@ const getPlatformName = (platformId: string, platforms: Array<{ id: string; name
 export const VideoDetailsPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { showError } = useNotification();
+  const { showSuccess, showError } = useNotification();
   const { video, posts, platforms, loading, error } = useVideoDetails(id);
+  const [publishingNow, setPublishingNow] = useState(false);
 
   useEffect(() => {
     if (error) {
       showError(error);
     }
   }, [error, showError]);
+
+  const handlePublishNow = useCallback(async () => {
+    if (!id) return;
+
+    try {
+      setPublishingNow(true);
+
+      // Atualizar o vídeo para ser processado agora
+      const now = new Date().toISOString();
+      await videosRepository.update(id, {
+        scheduledDate: now,
+        status: 'pending',
+      });
+
+      // Chamar a Edge Function para processar o vídeo
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error('Configuração do Supabase não encontrada.');
+      }
+
+      const { supabaseClient } = await import('@/services/supabaseClient');
+      const {
+        data: { session },
+      } = await supabaseClient.auth.getSession();
+
+      if (!session) {
+        throw new Error('Usuário não autenticado.');
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/process-scheduled-videos`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: supabaseAnonKey,
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erro ao processar vídeo');
+      }
+
+      showSuccess('Vídeo enviado para publicação! Aguarde alguns instantes.');
+      
+      // Recarregar a página após um momento
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+    } catch (err) {
+      showError(mapSupabaseError(err instanceof Error ? err : undefined));
+    } finally {
+      setPublishingNow(false);
+    }
+  }, [id, showSuccess, showError]);
 
   if (loading) {
     return (
@@ -68,10 +130,25 @@ export const VideoDetailsPage = () => {
         <Typography variant="h4" component="h1" fontWeight={700} sx={{ flex: 1 }}>
           Detalhes do vídeo
         </Typography>
+        {video.status === 'scheduled' && (
+          <LoadingButton
+            variant="contained"
+            color="primary"
+            startIcon={<PublishIcon />}
+            onClick={handlePublishNow}
+            loading={publishingNow}
+            loadingText="Publicando..."
+            disabled={loading}
+            sx={{ mr: 1 }}
+          >
+            Publicar Agora
+          </LoadingButton>
+        )}
         <Button
           variant="outlined"
           startIcon={<EditIcon />}
           onClick={() => navigate(`/schedules/${id}/edit`)}
+          disabled={publishingNow}
         >
           Editar
         </Button>

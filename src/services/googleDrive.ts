@@ -42,7 +42,9 @@ const refreshGoogleDriveToken = async (
     const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
     if (!supabaseUrl || !supabaseAnonKey) {
-      console.error('[Google Drive] Configuração do Supabase não encontrada');
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Configuração do Supabase não encontrada');
+      }
       return null;
     }
 
@@ -53,16 +55,56 @@ const refreshGoogleDriveToken = async (
     } = await supabaseClient.auth.getSession();
 
     if (!session) {
-      console.error('[Google Drive] Sessão expirada');
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Sessão expirada');
+      }
       return null;
     }
 
-    // TODO: Criar Edge Function para renovar token do Google Drive
-    // Por enquanto, retornar null para forçar reconexão
-    console.warn('[Google Drive] Token expirado. Reconecte sua conta do Google Drive.');
-    return null;
+    // Buscar plataforma do Google Drive para obter o platformId
+    const platforms = await platformsRepository.listByUser(userId);
+    const googleDrivePlatform = platforms.find((p) => p.name === 'google-drive');
+    
+    if (!googleDrivePlatform) {
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Plataforma Google Drive não encontrada');
+      }
+      return null;
+    }
+
+    // Chamar Edge Function para renovar token
+    const response = await fetch(`${supabaseUrl}/functions/v1/refresh-oauth-token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: supabaseAnonKey,
+      },
+      body: JSON.stringify({
+        platform: 'google-drive',
+        refreshToken,
+        platformId: googleDrivePlatform.id,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Erro ao renovar token:', error);
+      }
+      return null;
+    }
+
+    const data = await response.json();
+    
+    return {
+      accessToken: data.access_token,
+      expiresAt: data.expires_at || (data.expires_in ? Date.now() + data.expires_in * 1000 : Date.now() + 3600000),
+    };
   } catch (error) {
-    console.error('[Google Drive] Erro ao renovar token:', error);
+    if (import.meta.env.DEV) {
+      console.warn('[Google Drive] Erro ao renovar token:', error);
+    }
     return null;
   }
 };
@@ -88,22 +130,27 @@ export const getGoogleDriveToken = async (userId: string): Promise<string | null
     }
 
     // Verificar se o token expirou
-    if (isTokenExpired(storedToken) && storedToken.refreshToken) {
-      // Tentar renovar o token
-      const refreshed = await refreshGoogleDriveToken(userId, storedToken.refreshToken);
-      if (refreshed) {
-        // Atualizar o token no banco de dados (via Edge Function)
-        // Por enquanto, apenas retornar o novo token
-        // TODO: Salvar o novo token no banco
-        return refreshed.accessToken;
+    if (isTokenExpired(storedToken)) {
+      // Tentar renovar o token se houver refresh token
+      if (storedToken.refreshToken) {
+        const refreshed = await refreshGoogleDriveToken(userId, storedToken.refreshToken);
+        if (refreshed) {
+          // A Edge Function já atualiza o token no banco de dados
+          // Retornar o novo token
+          return refreshed.accessToken;
+        }
       }
-      // Se falhar ao renovar, lançar erro para que o usuário reconecte
-      throw new Error('Token do Google Drive expirado. Por favor, reconecte sua conta nas Configurações.');
+      // Se não houver refresh token ou falhar ao renovar, retornar null silenciosamente
+      // O erro será tratado na interface quando o usuário tentar usar o Google Drive
+      return null;
     }
     
     return storedToken.accessToken;
   } catch (error) {
-    console.error('[Google Drive] Erro ao obter token:', error);
+    // Log apenas em modo de desenvolvimento
+    if (import.meta.env.DEV) {
+      console.warn('[Google Drive] Erro ao obter token:', error);
+    }
     return null;
   }
 };
@@ -286,9 +333,64 @@ export const getThumbnailUrl = (
   };
 
   // Se já tem parâmetros, adiciona; senão, adiciona = no final
-  return thumbnailLink.includes('=') 
+  const url = thumbnailLink.includes('=') 
     ? `${thumbnailLink}-${sizes[size]}`
     : `${thumbnailLink}=${sizes[size]}`;
+  
+  // Adicionar parâmetros para evitar problemas de CORS e cache
+  const urlObj = new URL(url);
+  urlObj.searchParams.set('sz', sizes[size]);
+  
+  return urlObj.toString();
+};
+
+/**
+ * Obtém URL do thumbnail autenticada usando o token de acesso
+ * @param userId - ID do usuário
+ * @param fileId - ID do arquivo no Google Drive
+ * @param size - Tamanho do thumbnail ('low', 'medium', 'high')
+ * @returns URL do thumbnail ou null se não disponível
+ */
+export const getAuthenticatedThumbnailUrl = async (
+  userId: string,
+  fileId: string,
+  size: 'low' | 'medium' | 'high' = 'low',
+): Promise<string | null> => {
+  try {
+    const token = await getGoogleDriveToken(userId);
+    if (!token) {
+      return null;
+    }
+
+    // Usar a API do Google Drive para obter thumbnail com autenticação
+    const sizes = {
+      low: 200,
+      medium: 400,
+      high: 800,
+    };
+
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}/thumbnail?sz=${sizes[size]}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    // A API retorna um redirect para a imagem, então precisamos seguir o redirect
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.warn('[Google Drive] Erro ao obter thumbnail autenticada:', error);
+    }
+    return null;
+  }
 };
 
 /**
@@ -314,6 +416,80 @@ export const extractFileIdFromUrl = (url: string): string | null => {
     
     return null;
   } catch {
+    return null;
+  }
+};
+
+/**
+ * Obtém URL de download direta de um arquivo do Google Drive
+ * @param userId - ID do usuário
+ * @param fileId - ID do arquivo no Google Drive
+ * @returns Promise com URL de download ou null se não disponível
+ */
+export const getDownloadUrl = async (userId: string, fileId: string): Promise<string | null> => {
+  try {
+    const token = await getGoogleDriveToken(userId);
+    if (!token) {
+      throw new Error('Google Drive não está conectado. Conecte sua conta primeiro.');
+    }
+
+    // Obter metadados do arquivo para verificar se é um Google Workspace file
+    const metadata = await getFileMetadata(userId, fileId);
+    if (!metadata) {
+      return null;
+    }
+
+    // Se for um Google Workspace file (Google Docs, Sheets, etc.), usar export
+    if (metadata.mimeType?.startsWith('application/vnd.google-apps.')) {
+      // Para Google Workspace files, precisamos exportar
+      // Mas para vídeos, isso não se aplica
+      return null;
+    }
+
+    // Para arquivos normais (vídeos, etc.), usar o endpoint de download
+    // A URL de download requer o token de acesso na query string ou header
+    return `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.warn('[Google Drive] Erro ao obter URL de download:', error);
+    }
+    return null;
+  }
+};
+
+/**
+ * Faz download de um arquivo do Google Drive e retorna como ArrayBuffer
+ * Útil para Edge Functions que precisam do conteúdo do arquivo
+ * @param userId - ID do usuário
+ * @param fileId - ID do arquivo no Google Drive
+ * @returns Promise com ArrayBuffer do arquivo ou null se falhar
+ */
+export const downloadFile = async (userId: string, fileId: string): Promise<ArrayBuffer | null> => {
+  try {
+    const token = await getGoogleDriveToken(userId);
+    if (!token) {
+      throw new Error('Google Drive não está conectado. Conecte sua conta primeiro.');
+    }
+
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Erro ao baixar arquivo: ${error}`);
+    }
+
+    return await response.arrayBuffer();
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.warn('[Google Drive] Erro ao baixar arquivo:', error);
+    }
     return null;
   }
 };
