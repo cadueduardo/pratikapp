@@ -1,0 +1,118 @@
+import type { PostgrestError } from '@supabase/supabase-js';
+
+export type VideoStatus = 'draft' | 'scheduled' | 'pending' | 'processing' | 'posted' | 'failed';
+
+export type PostStatus = 'pending' | 'uploading' | 'posted' | 'failed';
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+  createdAt: string;
+}
+
+export interface NewUser {
+  name: string;
+  email: string;
+  avatarUrl?: string | null;
+}
+
+export interface UpdateUser {
+  name?: string;
+  email?: string;
+  avatarUrl?: string | null;
+}
+
+export interface Video {
+  id: string;
+  userId: string;
+  title: string;
+  description: string | null;
+  urlDrive: string;
+  scheduledDate: string | null;
+  status: VideoStatus;
+  selectedPlatformIds?: string[] | null; // IDs das plataformas selecionadas para publicação
+  mediaType?: string | null; // Tipo de mídia principal (ex: instagram-reels, youtube-shorts)
+  platformMediaTypes?: Record<string, string> | null; // Mapeamento de tipo de mídia por plataforma (ex: {youtube: "youtube-shorts", instagram: "instagram-reels"})
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NewVideo {
+  userId: string;
+  title: string;
+  description?: string | null;
+  urlDrive: string;
+  scheduledDate?: string | null;
+  status?: VideoStatus;
+  selectedPlatformIds?: string[] | null;
+  mediaType?: string | null;
+  platformMediaTypes?: Record<string, string> | null;
+}
+
+export interface UpdateVideo {
+  title?: string;
+  description?: string | null;
+  urlDrive?: string;
+  scheduledDate?: string | null;
+  status?: VideoStatus;
+  selectedPlatformIds?: string[] | null;
+  mediaType?: string | null;
+  platformMediaTypes?: Record<string, string> | null;
+}
+
+export interface Platform {
+  id: string;
+  userId: string;
+  name: string;
+  apiToken: string | null;
+  createdAt: string;
+}
+
+export interface NewPlatform {
+  userId: string;
+  name: string;
+  apiToken?: string | null;
+}
+
+export interface UpdatePlatform {
+  name?: string;
+  apiToken?: string | null;
+}
+
+export interface Post {
+  id: string;
+  videoId: string;
+  platformId: string;
+  status: PostStatus;
+  postedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+export interface NewPost {
+  videoId: string;
+  platformId: string;
+  status?: PostStatus;
+  postedAt?: string | null;
+  errorMessage?: string | null;
+}
+
+export interface UpdatePost {
+  status?: PostStatus;
+  postedAt?: string | null;
+  errorMessage?: string | null;
+}
+
+export class SupabaseRepositoryError extends Error {
+  public readonly cause?: PostgrestError;
+
+  constructor(message: string, cause?: PostgrestError) {
+    super(message);
+    this.name = 'SupabaseRepositoryError';
+    this.cause = cause;
+  }
+}
+
+export type RepositoryResult<T> = Promise<T>;

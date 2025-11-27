@@ -1,0 +1,16 @@
+node_modules
+coverage
+dist
+build
+**/*.svg
+public/icons/*.png
+
+
+
+
+
+
+
+
+
+
