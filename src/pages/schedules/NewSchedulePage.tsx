@@ -62,6 +62,28 @@ export const NewSchedulePage = () => {
   const [description, setDescription] = useState('');
   const [urlDrive, setUrlDrive] = useState('');
   const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null);
+
+  // Função wrapper para limpar URL e thumbnail
+  const handleUrlChange = useCallback((url: string) => {
+    setUrlDrive(url);
+    // Se a URL for limpa, também limpar a thumbnail
+    if (!url) {
+      // Limpar object URLs se existirem
+      if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+        URL.revokeObjectURL(videoThumbnail);
+      }
+      setVideoThumbnail(null);
+    }
+  }, [videoThumbnail]);
+
+  // Limpar object URLs quando o componente for desmontado
+  useEffect(() => {
+    return () => {
+      if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+        URL.revokeObjectURL(videoThumbnail);
+      }
+    };
+  }, [videoThumbnail]);
   const [scheduledDate, setScheduledDate] = useState<string>('');
   const [scheduledTimeDisplay, setScheduledTimeDisplay] = useState('');
   const [status, setStatus] = useState<VideoStatus>('draft');
@@ -180,8 +202,8 @@ export const NewSchedulePage = () => {
           const fileId = extractFileIdFromUrl(video.urlDrive);
           if (fileId) {
             const metadata = await getFileMetadata(user.id, fileId);
-            if (metadata?.thumbnailLink) {
-              const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low');
+            if (metadata) {
+              const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
               setVideoThumbnail(thumbnail);
             }
           }
@@ -308,7 +330,7 @@ export const NewSchedulePage = () => {
       }
 
       // Buscar thumbnail
-      const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low');
+      const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low', file.id, file.mimeType);
       setVideoThumbnail(thumbnail);
 
       // Limpar erro de URL
@@ -333,8 +355,8 @@ export const NewSchedulePage = () => {
 
       try {
         const metadata = await getFileMetadata(user.id, fileId);
-        if (metadata?.thumbnailLink) {
-          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low');
+        if (metadata) {
+          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
           setVideoThumbnail(thumbnail);
         } else {
           setVideoThumbnail(null);
@@ -547,11 +569,75 @@ export const NewSchedulePage = () => {
   ]);
 
   const handleFileSelect = useCallback((file: File) => {
-    // Por enquanto, apenas mostrar que o arquivo foi selecionado
-    // Em produção, você pode fazer upload para o servidor ou armazenar localmente
-    console.log('Arquivo selecionado:', file.name, file.type);
-    // TODO: Implementar upload de arquivo local
-  }, []);
+    // Limpar thumbnail anterior se existir
+    if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+      URL.revokeObjectURL(videoThumbnail);
+    }
+
+    // Se for uma imagem, criar URL do objeto diretamente
+    if (file.type.startsWith('image/')) {
+      const thumbnailUrl = URL.createObjectURL(file);
+      setVideoThumbnail(thumbnailUrl);
+      return;
+    }
+
+    // Se for um vídeo, criar thumbnail do primeiro frame
+    if (file.type.startsWith('video/')) {
+      const video = document.createElement('video');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const videoObjectUrl = URL.createObjectURL(file);
+
+      video.preload = 'metadata';
+      video.muted = true; // Necessário para alguns navegadores
+      video.playsInline = true; // Necessário para iOS
+
+      const cleanup = () => {
+        URL.revokeObjectURL(videoObjectUrl);
+        video.src = '';
+        video.load(); // Limpar o vídeo
+      };
+
+      video.onloadedmetadata = () => {
+        // Definir dimensões do canvas
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // Capturar o primeiro frame
+        video.currentTime = 0.1; // Ir para 0.1s para garantir que há um frame
+      };
+
+      video.onseeked = () => {
+        if (ctx) {
+          try {
+            // Desenhar o frame no canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Converter canvas para blob e criar URL
+            canvas.toBlob((blob) => {
+              if (blob) {
+                const thumbnailUrl = URL.createObjectURL(blob);
+                setVideoThumbnail(thumbnailUrl);
+              }
+              cleanup();
+            }, 'image/jpeg', 0.8);
+          } catch (err) {
+            console.error('Erro ao gerar thumbnail do vídeo:', err);
+            setVideoThumbnail(null);
+            cleanup();
+          }
+        }
+      };
+
+      video.onerror = () => {
+        // Se falhar, limpar thumbnail
+        setVideoThumbnail(null);
+        cleanup();
+      };
+
+      // Carregar o vídeo
+      video.src = videoObjectUrl;
+    }
+  }, [videoThumbnail]);
 
   const handlePublishNow = useCallback(async () => {
     if (!user?.id || !videoId) return;
@@ -992,10 +1078,11 @@ export const NewSchedulePage = () => {
         <Box sx={{ flex: { xs: '1', lg: '1' }, minWidth: { xs: '100%', lg: 400 }, maxWidth: { xs: '100%', lg: 450 } }}>
           <MediaUploadArea
             urlDrive={urlDrive}
-            onUrlChange={setUrlDrive}
+            onUrlChange={handleUrlChange}
             onGoogleDriveSelect={handleGoogleDriveSelectClick}
             onFileSelect={handleFileSelect}
             thumbnail={videoThumbnail}
+            onThumbnailChange={setVideoThumbnail}
             userId={user?.id}
             isGoogleDriveConnected={isGoogleDriveConnected}
             checkingGoogleDrive={checkingGoogleDrive}

@@ -144,8 +144,8 @@ export const SchedulesPage = () => {
               const fileId = extractFileIdFromUrl(video.urlDrive);
               if (fileId) {
                 const metadata = await getFileMetadata(user.id, fileId);
-                if (metadata?.thumbnailLink) {
-                  thumbnailsMap[video.id] = getThumbnailUrl(metadata.thumbnailLink, 'low');
+                if (metadata) {
+                  thumbnailsMap[video.id] = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType) || null;
                 } else {
                   thumbnailsMap[video.id] = null;
                 }
@@ -460,7 +460,7 @@ export const SchedulesPage = () => {
     }
     
     // Buscar thumbnail
-    const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low');
+    const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low', file.id, file.mimeType);
     setVideoThumbnail(thumbnail);
     
     // Limpar erro de URL
@@ -483,8 +483,8 @@ export const SchedulesPage = () => {
 
       try {
         const metadata = await getFileMetadata(user.id, fileId);
-        if (metadata?.thumbnailLink) {
-          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low');
+        if (metadata) {
+          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
           setVideoThumbnail(thumbnail);
         } else {
           setVideoThumbnail(null);
