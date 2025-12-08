@@ -11,3 +11,11 @@ CREATE INDEX IF NOT EXISTS idx_posts_platform_video_id ON public.posts(platform_
 COMMENT ON COLUMN public.posts.platform_video_id IS 'ID do vídeo na plataforma de destino (ex: TikTok publish_id, YouTube video_id)';
 
 
+
+
+
+
+
+
+
+

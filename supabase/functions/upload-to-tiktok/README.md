@@ -58,3 +58,11 @@ supabase functions deploy upload-to-tiktok
 - O upload pode levar alguns minutos dependendo do tamanho do vídeo
 
 
+
+
+
+
+
+
+
+

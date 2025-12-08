@@ -61,6 +61,7 @@ export const SchedulesPage = () => {
   const [videos, setVideos] = useState<Video[]>([]);
   const [videoPosts, setVideoPosts] = useState<Record<string, Post[]>>({});
   const [videoThumbnails, setVideoThumbnails] = useState<Record<string, string | null>>({});
+  const [allPlatforms, setAllPlatforms] = useState<Record<string, Platform>>({}); // Mapeamento de todas as plataformas por ID
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<VideoStatus | 'all'>('all');
   const [sortBy, setSortBy] = useState<'scheduledDate' | 'title' | 'createdAt' | 'status'>(
@@ -125,6 +126,31 @@ export const SchedulesPage = () => {
       const userVideos = await videosRepository.listByUser(user.id);
       setVideos(userVideos);
 
+      // Coletar todos os IDs de plataformas únicos dos vídeos
+      const platformIds = new Set<string>();
+      userVideos.forEach((video) => {
+        if (video.selectedPlatformIds) {
+          video.selectedPlatformIds.forEach((id) => platformIds.add(id));
+        }
+        // Também coletar dos posts
+        // (será feito abaixo)
+      });
+
+      // Carregar todas as plataformas necessárias
+      const platformsMap: Record<string, Platform> = {};
+      await Promise.all(
+        Array.from(platformIds).map(async (platformId) => {
+          try {
+            const platform = await platformsRepository.getById(platformId);
+            if (platform) {
+              platformsMap[platformId] = platform;
+            }
+          } catch {
+            // Ignorar erros ao carregar plataforma
+          }
+        }),
+      );
+
       // Carregar posts e thumbnails para cada vídeo
       const postsMap: Record<string, Post[]> = {};
       const thumbnailsMap: Record<string, string | null> = {};
@@ -133,6 +159,8 @@ export const SchedulesPage = () => {
           try {
             const posts = await postsRepository.listByVideo(video.id);
             postsMap[video.id] = posts;
+            // Coletar IDs de plataformas dos posts também
+            posts.forEach((post) => platformIds.add(post.platformId));
           } catch {
             // Ignorar erros ao carregar posts
             postsMap[video.id] = [];
@@ -157,8 +185,30 @@ export const SchedulesPage = () => {
           }
         }),
       );
+
+      // Carregar plataformas dos posts também
+      const postPlatformIds = new Set<string>();
+      Object.values(postsMap).forEach((posts) => {
+        posts.forEach((post) => postPlatformIds.add(post.platformId));
+      });
+      await Promise.all(
+        Array.from(postPlatformIds).map(async (platformId) => {
+          if (!platformsMap[platformId]) {
+            try {
+              const platform = await platformsRepository.getById(platformId);
+              if (platform) {
+                platformsMap[platformId] = platform;
+              }
+            } catch {
+              // Ignorar erros
+            }
+          }
+        }),
+      );
+
       setVideoPosts(postsMap);
       setVideoThumbnails(thumbnailsMap);
+      setAllPlatforms(platformsMap);
     } catch (err) {
       showError(mapSupabaseError(err instanceof Error ? err : undefined));
     } finally {
@@ -772,6 +822,64 @@ export const SchedulesPage = () => {
                                 })}
                               </Typography>
                             )}
+                            {/* Exibir plataformas selecionadas */}
+                            {video.selectedPlatformIds && video.selectedPlatformIds.length > 0 && (
+                              <Box sx={{ mt: 1.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
+                                  Plataformas:
+                                </Typography>
+                                <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.5}>
+                                  {video.selectedPlatformIds.map((platformId) => {
+                                    const platform = allPlatforms[platformId] || availablePlatforms.find((p) => p.id === platformId);
+                                    const platformInfo = platform ? getPlatformInfo(platform.name) : null;
+                                    return (
+                                      <Chip
+                                        key={platformId}
+                                        label={platformInfo?.displayName || platform?.name || 'Plataforma'}
+                                        size="small"
+                                        variant="outlined"
+                                        color="primary"
+                                      />
+                                    );
+                                  })}
+                                </Stack>
+                              </Box>
+                            )}
+                            {/* Exibir hashtags por plataforma */}
+                            {video.platformHashtags && video.selectedPlatformIds && Object.keys(video.platformHashtags).length > 0 && (
+                              <Box sx={{ mt: 1.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
+                                  Hashtags:
+                                </Typography>
+                                <Stack spacing={0.5}>
+                                  {video.selectedPlatformIds.map((platformId) => {
+                                    const platform = allPlatforms[platformId] || availablePlatforms.find((p) => p.id === platformId);
+                                    if (!platform) return null;
+                                    const hashtags = video.platformHashtags?.[platform.name];
+                                    if (!hashtags || hashtags.length === 0) return null;
+                                    const platformInfo = getPlatformInfo(platform.name);
+                                    return (
+                                      <Box key={platformId}>
+                                        <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block', fontWeight: 500 }}>
+                                          {platformInfo?.displayName || platform.name}:
+                                        </Typography>
+                                        <Stack direction="row" spacing={0.5} flexWrap="wrap" gap={0.5}>
+                                          {hashtags.map((hashtag, index) => (
+                                            <Chip
+                                              key={index}
+                                              label={hashtag}
+                                              size="small"
+                                              variant="filled"
+                                              sx={{ fontSize: '0.7rem' }}
+                                            />
+                                          ))}
+                                        </Stack>
+                                      </Box>
+                                    );
+                                  })}
+                                </Stack>
+                              </Box>
+                            )}
                             {/* Exibir status de posts por plataforma */}
                             {videoPosts[video.id] && videoPosts[video.id].length > 0 && (
                               <Box sx={{ mt: 1.5 }}>
@@ -780,12 +888,12 @@ export const SchedulesPage = () => {
                                 </Typography>
                                 <Stack direction="row" spacing={1} flexWrap="wrap" gap={0.5}>
                                   {videoPosts[video.id].map((post) => {
-                                    const platform = availablePlatforms.find((p) => p.id === post.platformId);
+                                    const platform = allPlatforms[post.platformId] || availablePlatforms.find((p) => p.id === post.platformId);
                                     const platformInfo = platform ? getPlatformInfo(platform.name) : null;
                                     return (
                                       <Chip
                                         key={post.id}
-                                        label={`${platformInfo?.displayName || 'Plataforma'}: ${post.status === 'posted' ? 'Publicado' : post.status === 'failed' ? 'Falhou' : post.status === 'uploading' ? 'Enviando' : 'Pendente'}`}
+                                        label={`${platformInfo?.displayName || platform?.name || 'Plataforma'}: ${post.status === 'posted' ? 'Publicado' : post.status === 'failed' ? 'Falhou' : post.status === 'uploading' ? 'Enviando' : 'Pendente'}`}
                                         size="small"
                                         color={
                                           post.status === 'posted'

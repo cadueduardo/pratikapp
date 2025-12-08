@@ -31,10 +31,13 @@ import {
   LoadingButton,
   useNotification,
 } from '@/components/common';
+import { AIChatDialog } from '@/components/schedules/AIChatDialog';
+import { HashtagManager } from '@/components/schedules/HashtagManager';
 import { MediaUploadArea } from '@/components/schedules/MediaUploadArea';
 import { GoogleDriveBrowser } from '@/components/googleDrive/GoogleDriveBrowser';
 import { useAuth } from '@/hooks/useAuth';
-import { platformsRepository, videosRepository } from '@/services/database';
+import { platformsRepository, usersRepository, videosRepository } from '@/services/database';
+import { generateVideoContent } from '@/services/aiGeneration';
 import type { Platform, VideoStatus } from '@/services/database/types';
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { extractFileIdFromUrl, getFileMetadata, getThumbnailUrl, isAuthenticated } from '@/services/googleDrive';
@@ -95,6 +98,29 @@ export const NewSchedulePage = () => {
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(false);
   const [googleDriveConnectDialogOpen, setGoogleDriveConnectDialogOpen] = useState(false);
   const [checkingGoogleDrive, setCheckingGoogleDrive] = useState(false);
+  const [aiAutoGenerate, setAiAutoGenerate] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [platformHashtags, setPlatformHashtags] = useState<Record<string, string[]>>({});
+  const [aiChatDialogOpen, setAiChatDialogOpen] = useState(false);
+  const [pendingHashtags, setPendingHashtags] = useState<string[]>([]);
+
+  // Distribuir hashtags pendentes quando forem geradas ou quando plataformas forem selecionadas
+  useEffect(() => {
+    if (pendingHashtags.length > 0 && selectedPlatformIds.length > 0) {
+      // Distribuir hashtags para TODAS as plataformas selecionadas (espelhar)
+      const updated: Record<string, string[]> = { ...platformHashtags };
+
+      selectedPlatformIds.forEach((platformId) => {
+        // Sempre atualizar com as hashtags pendentes (espelhar)
+        updated[platformId] = [...pendingHashtags];
+      });
+
+      setPlatformHashtags(updated);
+      // Limpar hashtags pendentes após distribuir
+      setPendingHashtags([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingHashtags.length, selectedPlatformIds.join(',')]);
   const [formErrors, setFormErrors] = useState<{
     title?: string;
     urlDrive?: string;
@@ -196,6 +222,21 @@ export const NewSchedulePage = () => {
         setPlatformMediaTypes(platformMediaTypesMap);
       }
 
+      // Carregar platformHashtags
+      if (video.platformHashtags) {
+        // Converter de formato {platformName: hashtags[]} para {platformId: hashtags[]}
+        const platformHashtagsMap: Record<string, string[]> = {};
+        if (video.selectedPlatformIds) {
+          video.selectedPlatformIds.forEach((platformId) => {
+            const platform = connectedPlatforms.find((p) => p.id === platformId);
+            if (platform && video.platformHashtags?.[platform.name]) {
+              platformHashtagsMap[platformId] = video.platformHashtags[platform.name];
+            }
+          });
+        }
+        setPlatformHashtags(platformHashtagsMap);
+      }
+
       // Buscar thumbnail do Google Drive
       try {
         if (isValidGoogleDriveUrl(video.urlDrive)) {
@@ -224,6 +265,20 @@ export const NewSchedulePage = () => {
     if (user?.id) {
       loadPlatforms();
       checkGoogleDriveConnection();
+      
+      // Carregar configuração de geração automática da IA
+      const loadAIConfig = async () => {
+        try {
+          const userData = await usersRepository.getById(user.id);
+          if (userData) {
+            setAiAutoGenerate(userData.aiAutoGenerate);
+          }
+        } catch (err) {
+          // Silenciosamente falhar - usuário pode não ter dados ainda
+          console.warn('Erro ao carregar configuração de IA:', err);
+        }
+      };
+      void loadAIConfig();
     }
   }, [user?.id, loadPlatforms, checkGoogleDriveConnection]);
 
@@ -323,6 +378,9 @@ export const NewSchedulePage = () => {
     async (file: GoogleDriveFile) => {
       // Preencher URL do Google Drive
       setUrlDrive(file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`);
+      
+      // Armazenar fileId para geração de IA
+      setSelectedFileId(file.id);
 
       // Preencher título se estiver vazio
       if (!title) {
@@ -335,8 +393,33 @@ export const NewSchedulePage = () => {
 
       // Limpar erro de URL
       setFormErrors((prev) => ({ ...prev, urlDrive: undefined }));
+
+      // Gerar conteúdo automaticamente se habilitado (em background, não bloquear UI)
+      if (aiAutoGenerate && user?.id && file.id) {
+        // Executar em background sem bloquear a UI
+        generateVideoContent({
+          fileId: file.id,
+          userId: user.id,
+        })
+          .then((result) => {
+            setTitle(result.title);
+            setDescription(result.description);
+            // Adicionar hashtags à descrição se não estiverem já incluídas
+            if (result.hashtags.length > 0) {
+              const hashtagsText = result.hashtags.join(' ');
+              if (!result.description.includes(hashtagsText)) {
+                setDescription(`${result.description}\n\n${hashtagsText}`);
+              }
+            }
+            showSuccess('Conteúdo gerado automaticamente pela IA!');
+          })
+          .catch((err) => {
+            // Não mostrar erro - apenas logar, pois é opcional
+            console.warn('Erro ao gerar conteúdo automaticamente:', err);
+          });
+      }
     },
-    [title],
+    [title, aiAutoGenerate, user?.id, showSuccess],
   );
 
   // Buscar thumbnail quando URL for alterada manualmente
@@ -344,14 +427,19 @@ export const NewSchedulePage = () => {
     const fetchThumbnailFromUrl = async () => {
       if (!urlDrive || !user?.id || !isValidGoogleDriveUrl(urlDrive)) {
         setVideoThumbnail(null);
+        setSelectedFileId(null);
         return;
       }
 
       const fileId = extractFileIdFromUrl(urlDrive);
       if (!fileId) {
         setVideoThumbnail(null);
+        setSelectedFileId(null);
         return;
       }
+
+      // Armazenar fileId para geração de IA
+      setSelectedFileId(fileId);
 
       try {
         const metadata = await getFileMetadata(user.id, fileId);
@@ -515,6 +603,16 @@ export const NewSchedulePage = () => {
         ? platformMediaTypes[selectedPlatformIds[0]]
         : null;
 
+      // Converter platformHashtags de {platformId: hashtags[]} para {platformName: hashtags[]}
+      const platformHashtagsMap: Record<string, string[]> = {};
+      selectedPlatformIds.forEach((platformId) => {
+        const platform = availablePlatforms.find((p) => p.id === platformId);
+        const hashtags = platformHashtags[platformId];
+        if (platform && hashtags && hashtags.length > 0) {
+          platformHashtagsMap[platform.name] = hashtags;
+        }
+      });
+
       if (isEditing && videoId) {
         // Atualizar vídeo existente
         await videosRepository.update(videoId, {
@@ -526,6 +624,7 @@ export const NewSchedulePage = () => {
           selectedPlatformIds: selectedPlatformIds.length > 0 ? selectedPlatformIds : null,
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
+          platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
         });
 
         showSuccess('Agendamento atualizado com sucesso!');
@@ -542,6 +641,7 @@ export const NewSchedulePage = () => {
           selectedPlatformIds: selectedPlatformIds.length > 0 ? selectedPlatformIds : null,
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
+          platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
         });
 
         showSuccess('Agendamento criado com sucesso!');
@@ -788,16 +888,28 @@ export const NewSchedulePage = () => {
               <Stack spacing={3}>
                 {/* Título */}
                 <Stack spacing={1}>
-                  <AuthTextField
-                    label="Título do vídeo"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    error={Boolean(formErrors.title)}
-                    helperText={formErrors.title}
-                    fullWidth
-                    inputProps={{ maxLength: 200 }}
-                    required
-                  />
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                    <AuthTextField
+                      label="Título do vídeo"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      error={Boolean(formErrors.title)}
+                      helperText={formErrors.title}
+                      fullWidth
+                      inputProps={{ maxLength: 200 }}
+                      required
+                    />
+                    {user?.id && (
+                      <Button
+                        variant="outlined"
+                        onClick={() => setAiChatDialogOpen(true)}
+                        disabled={loading || loadingVideo}
+                        size="small"
+                      >
+                        Gerar com IA
+                      </Button>
+                    )}
+                  </Box>
                   {!formErrors.title && (
                     <CharacterCounter current={title.length} max={200} min={3} showMin />
                   )}
@@ -970,6 +1082,18 @@ export const NewSchedulePage = () => {
                   </Stack>
                 )}
 
+                {/* Gerenciador de Hashtags */}
+                {selectedPlatformIds.length > 0 && user?.id && (
+                  <Stack spacing={1}>
+                    <HashtagManager
+                      userId={user.id}
+                      selectedPlatformIds={selectedPlatformIds}
+                      platformHashtags={platformHashtags}
+                      onPlatformHashtagsChange={setPlatformHashtags}
+                    />
+                  </Stack>
+                )}
+
                 {/* Data e Hora */}
                 <Stack direction="row" spacing={2}>
                   <Stack spacing={1} sx={{ flex: 1 }}>
@@ -1112,6 +1236,21 @@ export const NewSchedulePage = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Dialog de Chat com IA */}
+      {user?.id && (
+        <AIChatDialog
+          open={aiChatDialogOpen}
+          userId={user.id}
+          onClose={() => setAiChatDialogOpen(false)}
+          onContentSelected={(content) => {
+            setTitle(content.title);
+            setDescription(content.description);
+            // Armazenar hashtags para distribuir quando plataformas forem selecionadas
+            setPendingHashtags(content.hashtags || []);
+          }}
+        />
+      )}
 
       {user?.id && isGoogleDriveConnected && (
         <GoogleDriveBrowser

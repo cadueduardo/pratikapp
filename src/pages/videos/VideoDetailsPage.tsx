@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   Divider,
   IconButton,
@@ -20,6 +21,7 @@ import { LoadingButton, StatusChip, useNotification } from '@/components/common'
 import { useVideoDetails } from '@/hooks/useVideoDetails';
 import { videosRepository } from '@/services/database';
 import { mapSupabaseError } from '@/utils/errorMessages';
+import { getPlatformInfo } from '@/utils/platforms';
 
 const getPlatformName = (platformId: string, platforms: Array<{ id: string; name: string }>) => {
   return platforms.find((p) => p.id === platformId)?.name || 'Plataforma desconhecida';
@@ -220,6 +222,69 @@ export const VideoDetailsPage = () => {
                       minute: '2-digit',
                     })}
                   </Typography>
+                </Box>
+              </>
+            )}
+
+            {video.selectedPlatformIds && video.selectedPlatformIds.length > 0 && (
+              <>
+                <Divider />
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                    Plataformas
+                  </Typography>
+                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
+                    {video.selectedPlatformIds.map((platformId) => {
+                      const platform = platforms.find((p) => p.id === platformId);
+                      const platformInfo = platform ? getPlatformInfo(platform.name) : null;
+                      return (
+                        <Chip
+                          key={platformId}
+                          label={platformInfo?.displayName || platform?.name || 'Plataforma'}
+                          variant="outlined"
+                          color="primary"
+                        />
+                      );
+                    })}
+                  </Box>
+                </Box>
+              </>
+            )}
+
+            {video.platformHashtags && video.selectedPlatformIds && Object.keys(video.platformHashtags).length > 0 && (
+              <>
+                <Divider />
+                <Box>
+                  <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                    Hashtags
+                  </Typography>
+                  <Stack spacing={2} sx={{ mt: 1 }}>
+                    {video.selectedPlatformIds.map((platformId) => {
+                      const platform = platforms.find((p) => p.id === platformId);
+                      if (!platform) return null;
+                      const hashtags = video.platformHashtags?.[platform.name];
+                      if (!hashtags || hashtags.length === 0) return null;
+                      const platformInfo = getPlatformInfo(platform.name);
+                      return (
+                        <Box key={platformId}>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5, fontWeight: 500 }}>
+                            {platformInfo?.displayName || platform.name}:
+                          </Typography>
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                            {hashtags.map((hashtag, index) => (
+                              <Chip
+                                key={index}
+                                label={hashtag}
+                                size="small"
+                                variant="filled"
+                                sx={{ fontSize: '0.75rem' }}
+                              />
+                            ))}
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Stack>
                 </Box>
               </>
             )}
