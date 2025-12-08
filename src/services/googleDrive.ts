@@ -207,6 +207,47 @@ export const listFolders = async (
 };
 
 /**
+ * Lista imagens em uma pasta específica do Google Drive
+ * @param userId - ID do usuário
+ * @param folderId - ID da pasta no Google Drive (opcional, lista raiz se não informado)
+ * @returns Promise com lista de arquivos de imagem
+ */
+export const listImagesInFolder = async (
+  userId: string,
+  folderId?: string,
+): Promise<GoogleDriveFile[]> => {
+  const token = await getGoogleDriveToken(userId);
+  if (!token) {
+    throw new Error('Google Drive não está conectado. Conecte sua conta primeiro.');
+  }
+
+  let query = "mimeType contains 'image/' and trashed=false";
+  if (folderId) {
+    query += ` and '${folderId}' in parents`;
+  } else {
+    // Quando não há folderId, listar apenas imagens da raiz (Meu Drive)
+    query += ` and 'root' in parents`;
+  }
+
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,parents)&orderBy=name`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Erro ao listar imagens: ${error}`);
+  }
+
+  const data: GoogleDriveApiResponse = await response.json();
+  return data.files;
+};
+
+/**
  * Lista vídeos em uma pasta específica do Google Drive
  * @param userId - ID do usuário
  * @param folderId - ID da pasta no Google Drive (opcional, lista raiz se não informado)
@@ -248,6 +289,47 @@ export const listVideosInFolder = async (
 };
 
 /**
+ * Lista mídia (vídeos e imagens) em uma pasta específica do Google Drive
+ * @param userId - ID do usuário
+ * @param folderId - ID da pasta no Google Drive (opcional, lista raiz se não informado)
+ * @returns Promise com lista de arquivos de mídia (vídeos e imagens)
+ */
+export const listMediaInFolder = async (
+  userId: string,
+  folderId?: string,
+): Promise<GoogleDriveFile[]> => {
+  const token = await getGoogleDriveToken(userId);
+  if (!token) {
+    throw new Error('Google Drive não está conectado. Conecte sua conta primeiro.');
+  }
+
+  let query = "(mimeType contains 'video/' or mimeType contains 'image/') and trashed=false";
+  if (folderId) {
+    query += ` and '${folderId}' in parents`;
+  } else {
+    // Quando não há folderId, listar apenas mídia da raiz (Meu Drive)
+    query += ` and 'root' in parents`;
+  }
+
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,parents)&orderBy=name`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Erro ao listar mídia: ${error}`);
+  }
+
+  const data: GoogleDriveApiResponse = await response.json();
+  return data.files;
+};
+
+/**
  * Busca vídeos por nome no Google Drive
  * @param userId - ID do usuário
  * @param searchQuery - Termo de busca
@@ -273,6 +355,38 @@ export const searchVideos = async (userId: string, searchQuery: string): Promise
   if (!response.ok) {
     const error = await response.text();
     throw new Error(`Erro ao buscar vídeos: ${error}`);
+  }
+
+  const data: GoogleDriveApiResponse = await response.json();
+  return data.files;
+};
+
+/**
+ * Busca mídia (vídeos e imagens) por nome no Google Drive
+ * @param userId - ID do usuário
+ * @param searchQuery - Termo de busca
+ * @returns Promise com lista de mídia encontrada
+ */
+export const searchMedia = async (userId: string, searchQuery: string): Promise<GoogleDriveFile[]> => {
+  const token = await getGoogleDriveToken(userId);
+  if (!token) {
+    throw new Error('Google Drive não está conectado. Conecte sua conta primeiro.');
+  }
+
+  const query = `name contains '${searchQuery}' and (mimeType contains 'video/' or mimeType contains 'image/') and trashed=false`;
+
+  const response = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,parents)&orderBy=name`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Erro ao buscar mídia: ${error}`);
   }
 
   const data: GoogleDriveApiResponse = await response.json();
@@ -313,35 +427,65 @@ export const getFileMetadata = async (userId: string, fileId: string): Promise<G
 };
 
 /**
- * Obtém URL do thumbnail de um vídeo em baixa qualidade
- * @param thumbnailLink - URL do thumbnail do Google Drive
+ * Obtém URL do thumbnail de um arquivo do Google Drive
+ * @param fileId - ID do arquivo no Google Drive
+ * @param thumbnailLink - URL do thumbnail do Google Drive (opcional)
+ * @param mimeType - Tipo MIME do arquivo (opcional)
  * @param size - Tamanho do thumbnail ('low', 'medium', 'high')
- * @returns URL do thumbnail com parâmetros de tamanho
+ * @returns URL do thumbnail
  */
 export const getThumbnailUrl = (
   thumbnailLink: string | undefined,
   size: 'low' | 'medium' | 'high' = 'low',
+  fileId?: string,
+  mimeType?: string,
 ): string | null => {
-  if (!thumbnailLink) {
-    return null;
+  // Priorizar usar fileId com a URL de thumbnail do Google Drive que funciona no frontend
+  // Isso evita problemas de CORS com lh3.googleusercontent.com
+  if (fileId) {
+    const sizeMap = {
+      low: 200,
+      medium: 400,
+      high: 800,
+    };
+    
+    // Usar o endpoint de thumbnail do Google Drive que funciona no frontend
+    // Formato: https://drive.google.com/thumbnail?id=FILE_ID&sz=w400-h400
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${sizeMap[size]}-h${sizeMap[size]}`;
   }
 
-  const sizes = {
-    low: 'w200-h200-p-k-nu',
-    medium: 'w400-h400-p-k-nu',
-    high: 'w800-h800-p-k-nu',
-  };
+  // Se não temos fileId mas temos thumbnailLink, tentar usar (pode falhar por CORS)
+  // Mas é melhor ter fileId sempre que possível
+  if (thumbnailLink) {
+    const sizes = {
+      low: 'w200-h200-p-k-nu',
+      medium: 'w400-h400-p-k-nu',
+      high: 'w800-h800-p-k-nu',
+    };
 
-  // Se já tem parâmetros, adiciona; senão, adiciona = no final
-  const url = thumbnailLink.includes('=') 
-    ? `${thumbnailLink}-${sizes[size]}`
-    : `${thumbnailLink}=${sizes[size]}`;
-  
-  // Adicionar parâmetros para evitar problemas de CORS e cache
-  const urlObj = new URL(url);
-  urlObj.searchParams.set('sz', sizes[size]);
-  
-  return urlObj.toString();
+    try {
+      let url = thumbnailLink;
+      
+      // Remover parâmetros de tamanho existentes se houver
+      url = url.replace(/[=]-?w\d+-h\d+-p-k-nu/g, '');
+      
+      // Adicionar novo parâmetro de tamanho
+      if (url.includes('=')) {
+        url = `${url}-${sizes[size]}`;
+      } else {
+        url = `${url}=${sizes[size]}`;
+      }
+      
+      return url;
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Erro ao processar thumbnail URL:', error);
+      }
+      return thumbnailLink;
+    }
+  }
+
+  return null;
 };
 
 /**

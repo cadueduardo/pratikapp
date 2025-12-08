@@ -46,10 +46,14 @@ export const useVideoDetails = (videoId: string | undefined) => {
           return;
         }
 
-        // Buscar plataformas dos posts
-        const platformIds = [...new Set(posts.map((p) => p.platformId))];
+        // Buscar plataformas dos posts e das plataformas selecionadas
+        const platformIds = new Set<string>();
+        posts.forEach((p) => platformIds.add(p.platformId));
+        if (video.selectedPlatformIds) {
+          video.selectedPlatformIds.forEach((id) => platformIds.add(id));
+        }
         const platforms = await Promise.all(
-          platformIds.map((id) => platformsRepository.getById(id)),
+          Array.from(platformIds).map((id) => platformsRepository.getById(id)),
         );
 
         setData({

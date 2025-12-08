@@ -1,9 +1,10 @@
 /**
- * Componente para navegar e selecionar vídeos do Google Drive
+ * Componente para navegar e selecionar mídia (vídeos e imagens) do Google Drive
  */
 
 import FolderIcon from '@mui/icons-material/Folder';
 import VideoFileIcon from '@mui/icons-material/VideoFile';
+import ImageIcon from '@mui/icons-material/Image';
 import SearchIcon from '@mui/icons-material/Search';
 import {
   Box,
@@ -29,8 +30,8 @@ import {
   getFileMetadata,
   getThumbnailUrl,
   listFolders,
-  listVideosInFolder,
-  searchVideos,
+  listMediaInFolder,
+  searchMedia,
 } from '@/services/googleDrive';
 
 interface GoogleDriveBrowserProps {
@@ -54,7 +55,7 @@ export const GoogleDriveBrowser = ({
   const { showError } = useNotification();
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<GoogleDriveFile[]>([]);
-  const [videos, setVideos] = useState<GoogleDriveFile[]>([]);
+  const [media, setMedia] = useState<GoogleDriveFile[]>([]);
   const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbItem[]>([{ name: 'Meu Drive' }]);
   const [currentFolderId, setCurrentFolderId] = useState<string | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
@@ -67,13 +68,13 @@ export const GoogleDriveBrowser = ({
       try {
         setLoading(true);
         setSearching(false);
-        const [foldersData, videosData] = await Promise.all([
+        const [foldersData, mediaData] = await Promise.all([
           listFolders(userId, folderId),
-          listVideosInFolder(userId, folderId),
+          listMediaInFolder(userId, folderId),
         ]);
 
         setFolders(foldersData);
-        setVideos(videosData);
+        setMedia(mediaData);
         setCurrentFolderId(folderId);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Erro ao carregar pasta';
@@ -92,12 +93,12 @@ export const GoogleDriveBrowser = ({
         setSearching(false);
         try {
           setLoading(true);
-          const [foldersData, videosData] = await Promise.all([
+          const [foldersData, mediaData] = await Promise.all([
             listFolders(userId, currentFolderId),
-            listVideosInFolder(userId, currentFolderId),
+            listMediaInFolder(userId, currentFolderId),
           ]);
           setFolders(foldersData);
-          setVideos(videosData);
+          setMedia(mediaData);
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Erro ao carregar pasta';
           showError(errorMessage);
@@ -110,11 +111,11 @@ export const GoogleDriveBrowser = ({
       try {
         setSearching(true);
         setLoading(true);
-        const results = await searchVideos(userId, query);
-        setVideos(results);
+        const results = await searchMedia(userId, query);
+        setMedia(results);
         setFolders([]);
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Erro ao buscar vídeos';
+        const errorMessage = err instanceof Error ? err.message : 'Erro ao buscar mídia';
         showError(errorMessage);
       } finally {
         setLoading(false);
@@ -146,29 +147,30 @@ export const GoogleDriveBrowser = ({
     await loadFolder(targetFolder.id);
   };
 
-  const handleVideoSelect = async (video: GoogleDriveFile) => {
+  const handleMediaSelect = async (file: GoogleDriveFile) => {
     // Buscar metadados completos incluindo thumbnail
     try {
-      const fullMetadata = await getFileMetadata(userId, video.id);
+      const fullMetadata = await getFileMetadata(userId, file.id);
       if (fullMetadata) {
         onSelect(fullMetadata);
         onClose();
       } else {
-        onSelect(video);
+        onSelect(file);
         onClose();
       }
     } catch (err) {
       // Se falhar, usar os dados que já temos
-      onSelect(video);
+      onSelect(file);
       onClose();
     }
   };
+
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>
         <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography variant="h6">Selecionar vídeo do Google Drive</Typography>
+          <Typography variant="h6">Selecionar mídia do Google Drive</Typography>
         </Stack>
       </DialogTitle>
       <DialogContent>
@@ -194,7 +196,7 @@ export const GoogleDriveBrowser = ({
           <TextField
             fullWidth
             size="small"
-            placeholder="Buscar vídeos..."
+            placeholder="Buscar vídeos e imagens..."
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value);
@@ -216,8 +218,8 @@ export const GoogleDriveBrowser = ({
             </Box>
           )}
 
-          {/* Folders and Videos */}
-          {!loading && (folders.length > 0 || videos.length > 0) && (
+          {/* Folders and Media */}
+          {!loading && (folders.length > 0 || media.length > 0) && (
             <ImageList cols={3} gap={16} sx={{ m: 0 }}>
               {/* Folders */}
               {folders.map((folder) => (
@@ -245,29 +247,37 @@ export const GoogleDriveBrowser = ({
                 </ImageListItem>
               ))}
 
-              {/* Videos */}
-              {videos.map((video) => {
-                const thumbnailUrl = getThumbnailUrl(video.thumbnailLink, 'medium');
+              {/* Media (Videos and Images) */}
+              {media.map((file) => {
+                const isVideo = file.mimeType?.startsWith('video/');
+                const isImage = file.mimeType?.startsWith('image/');
+                // Tentar obter thumbnail usando fileId e mimeType como fallback
+                const thumbnailUrl = getThumbnailUrl(file.thumbnailLink, 'medium', file.id, file.mimeType);
+                
                 return (
                   <ImageListItem
-                    key={video.id}
+                    key={file.id}
                     sx={{ cursor: 'pointer' }}
-                    onClick={() => handleVideoSelect(video)}
+                    onClick={() => handleMediaSelect(file)}
                   >
                     {thumbnailUrl ? (
                       <img
                         src={thumbnailUrl}
-                        alt={video.name}
+                        alt={file.name}
                         loading="lazy"
                         onError={(e) => {
                           // Se a imagem falhar ao carregar, mostrar ícone padrão
+                          // Não tentar obter thumbnail autenticada pois causa CORS no frontend
                           const target = e.target as HTMLImageElement;
                           target.style.display = 'none';
                           const parent = target.parentElement;
                           if (parent) {
                             const fallback = document.createElement('div');
                             fallback.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 150px; background-color: rgba(0,0,0,0.04); border-radius: 4px;';
-                            fallback.innerHTML = '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>';
+                            const iconSvg = isVideo 
+                              ? '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>'
+                              : '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>';
+                            fallback.innerHTML = iconSvg;
                             parent.appendChild(fallback);
                           }
                         }}
@@ -289,14 +299,18 @@ export const GoogleDriveBrowser = ({
                           borderRadius: 1,
                         }}
                       >
-                        <VideoFileIcon sx={{ fontSize: 64, color: 'primary.main' }} />
+                        {isVideo ? (
+                          <VideoFileIcon sx={{ fontSize: 64, color: 'primary.main' }} />
+                        ) : (
+                          <ImageIcon sx={{ fontSize: 64, color: 'primary.main' }} />
+                        )}
                       </Box>
                     )}
                     <ImageListItemBar
-                      title={video.name}
+                      title={file.name}
                       subtitle={
-                        video.size
-                          ? `${(video.size / 1024 / 1024).toFixed(1)} MB`
+                        file.size
+                          ? `${(file.size / 1024 / 1024).toFixed(1)} MB`
                           : undefined
                       }
                       sx={{
@@ -315,13 +329,13 @@ export const GoogleDriveBrowser = ({
           )}
 
           {/* Empty State */}
-          {!loading && folders.length === 0 && videos.length === 0 && (
+          {!loading && folders.length === 0 && media.length === 0 && (
             <EmptyState
-              title={searching ? 'Nenhum vídeo encontrado' : 'Pasta vazia'}
+              title={searching ? 'Nenhuma mídia encontrada' : 'Pasta vazia'}
               description={
                 searching
-                  ? `Não foram encontrados vídeos com "${searchQuery}"`
-                  : 'Esta pasta não contém vídeos ou pastas'
+                  ? `Não foram encontrados vídeos ou imagens com "${searchQuery}"`
+                  : 'Esta pasta não contém mídia ou pastas'
               }
             />
           )}

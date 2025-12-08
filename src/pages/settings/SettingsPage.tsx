@@ -25,6 +25,8 @@ import { useSearchParams } from 'react-router-dom';
 
 import { AuthTextField } from '@/components/auth';
 import { ConfirmDialog, LoadingButton, useNotification } from '@/components/common';
+import { AIContextEditor } from '@/components/settings/AIContextEditor';
+import { AIKeysEditor } from '@/components/settings/AIKeysEditor';
 import { useAuth } from '@/hooks/useAuth';
 import { mapSupabaseError } from '@/utils/errorMessages';
 import { platformsRepository, usersRepository } from '@/services/database';
@@ -50,10 +52,15 @@ export const SettingsPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [tabValue, setTabValue] = useState(0);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [aiContextLoading, setAiContextLoading] = useState(false);
 
   // Perfil
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+
+  // Contexto da IA
+  const [aiContext, setAiContext] = useState<string | null>(null);
+  const [aiAutoGenerate, setAiAutoGenerate] = useState(false);
 
   // Plataformas
   const [platforms, setPlatforms] = useState<Platform[]>([]);
@@ -73,6 +80,26 @@ export const SettingsPage = () => {
       setEmail(user.email || '');
     }
   }, [user]);
+
+  // Carregar dados do usuário (incluindo contexto da IA)
+  useEffect(() => {
+    const loadUserData = async () => {
+      if (!user?.id) return;
+
+      try {
+        const userData = await usersRepository.getById(user.id);
+        if (userData) {
+          setAiContext(userData.aiContext);
+          setAiAutoGenerate(userData.aiAutoGenerate);
+        }
+      } catch (err) {
+        // Silenciosamente falhar - usuário pode não ter dados ainda
+        console.warn('Erro ao carregar dados do usuário:', err);
+      }
+    };
+
+    void loadUserData();
+  }, [user?.id]);
 
   // Sincronizar aba com URL na inicialização e quando a URL mudar
   useEffect(() => {
@@ -202,6 +229,24 @@ export const SettingsPage = () => {
       setProfileLoading(false);
     }
   }, [user, name, showSuccess, showError]);
+
+  const handleAIContextSave = useCallback(async () => {
+    if (!user?.id) return;
+
+    try {
+      setAiContextLoading(true);
+      await usersRepository.update(user.id, {
+        aiContext: aiContext || null,
+        aiAutoGenerate,
+      });
+
+      showSuccess('Contexto da IA salvo com sucesso!');
+    } catch (err) {
+      showError(mapSupabaseError(err instanceof Error ? err : undefined));
+    } finally {
+      setAiContextLoading(false);
+    }
+  }, [user?.id, aiContext, aiAutoGenerate, showSuccess, showError]);
 
   const handlePlatformDialogOpen = (platform?: Platform) => {
     if (platform) {
@@ -361,6 +406,8 @@ export const SettingsPage = () => {
           <Tabs value={tabValue} onChange={handleTabChange}>
             <Tab label="Perfil" />
             <Tab label="Plataformas" />
+            <Tab label="Contexto da IA" />
+            <Tab label="Chaves de IA" />
           </Tabs>
         </Box>
 
@@ -498,6 +545,37 @@ export const SettingsPage = () => {
                 </Stack>
               )}
             </Stack>
+          </CardContent>
+        </TabPanel>
+
+        <TabPanel value={tabValue} index={2}>
+          <CardContent>
+            <Stack spacing={3}>
+              <AIContextEditor
+                aiContext={aiContext}
+                aiAutoGenerate={aiAutoGenerate}
+                onContextChange={setAiContext}
+                onAutoGenerateChange={setAiAutoGenerate}
+                loading={aiContextLoading}
+              />
+
+              <Box>
+                <LoadingButton
+                  variant="contained"
+                  onClick={handleAIContextSave}
+                  loading={aiContextLoading}
+                  loadingText="Salvando..."
+                >
+                  Salvar contexto
+                </LoadingButton>
+              </Box>
+            </Stack>
+          </CardContent>
+        </TabPanel>
+
+        <TabPanel value={tabValue} index={3}>
+          <CardContent>
+            {user?.id && <AIKeysEditor userId={user.id} loading={false} />}
           </CardContent>
         </TabPanel>
       </Card>

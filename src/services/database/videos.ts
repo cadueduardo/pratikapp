@@ -20,6 +20,7 @@ const mapVideo = (row: VideoRow): Video => ({
   selectedPlatformIds: (row.selected_platform_ids as string[] | null) || null,
   mediaType: (row.media_type as string | null) || null,
   platformMediaTypes: (row.platform_media_types as Record<string, string> | null) || null,
+  platformHashtags: ((row as any).platform_hashtags as Record<string, string[]> | null) || null,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -68,7 +69,7 @@ export const videosRepository = {
         .single();
     }
 
-    const insertPayload: VideoInsert = {
+    const insertPayload: VideoInsert & { platform_hashtags?: Record<string, string[]> | null } = {
       user_id: payload.userId,
       title: payload.title,
       description: payload.description ?? null,
@@ -78,6 +79,7 @@ export const videosRepository = {
       selected_platform_ids: payload.selectedPlatformIds ?? null,
       media_type: payload.mediaType ?? null,
       platform_media_types: payload.platformMediaTypes ?? null,
+      platform_hashtags: payload.platformHashtags ?? null,
     };
 
     const response = await supabaseClient.from('videos').insert(insertPayload).select('*').single();
@@ -91,7 +93,7 @@ export const videosRepository = {
   },
 
   async update(id: string, payload: UpdateVideo): RepositoryResult<Video> {
-    const updates: VideoUpdateRow = {};
+    const updates: VideoUpdateRow & { platform_hashtags?: Record<string, string[]> | null } = {};
     if (payload.title !== undefined) {
       updates.title = payload.title;
     }
@@ -115,6 +117,9 @@ export const videosRepository = {
     }
     if (payload.platformMediaTypes !== undefined) {
       updates.platform_media_types = payload.platformMediaTypes ?? null;
+    }
+    if (payload.platformHashtags !== undefined) {
+      updates.platform_hashtags = payload.platformHashtags ?? null;
     }
 
     if (Object.keys(updates).length === 0) {

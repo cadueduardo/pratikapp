@@ -14,6 +14,10 @@ const mapUser = (row: UserRow): User => ({
   name: row.name,
   email: row.email,
   avatarUrl: row.avatar_url,
+  aiContext: row.ai_context ?? null,
+  aiAutoGenerate: row.ai_auto_generate ?? false,
+  geminiApiKey: (row as any).gemini_api_key ?? null,
+  openaiApiKey: (row as any).openai_api_key ?? null,
   createdAt: row.created_at,
 });
 
@@ -67,7 +71,7 @@ export const usersRepository = {
   },
 
   async update(id: string, payload: UpdateUser): RepositoryResult<User> {
-    const updates: UserUpdateRow = {};
+    const updates: UserUpdateRow & { gemini_api_key?: string | null; openai_api_key?: string | null } = {};
     if (payload.name !== undefined) {
       updates.name = payload.name;
     }
@@ -76,6 +80,18 @@ export const usersRepository = {
     }
     if (payload.avatarUrl !== undefined) {
       updates.avatar_url = payload.avatarUrl ?? null;
+    }
+    if (payload.aiContext !== undefined) {
+      updates.ai_context = payload.aiContext ?? null;
+    }
+    if (payload.aiAutoGenerate !== undefined) {
+      updates.ai_auto_generate = payload.aiAutoGenerate;
+    }
+    if (payload.geminiApiKey !== undefined) {
+      updates.gemini_api_key = payload.geminiApiKey ?? null;
+    }
+    if (payload.openaiApiKey !== undefined) {
+      updates.openai_api_key = payload.openaiApiKey ?? null;
     }
 
     if (Object.keys(updates).length === 0) {

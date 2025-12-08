@@ -31,10 +31,13 @@ import {
   LoadingButton,
   useNotification,
 } from '@/components/common';
+import { AIChatDialog } from '@/components/schedules/AIChatDialog';
+import { HashtagManager } from '@/components/schedules/HashtagManager';
 import { MediaUploadArea } from '@/components/schedules/MediaUploadArea';
 import { GoogleDriveBrowser } from '@/components/googleDrive/GoogleDriveBrowser';
 import { useAuth } from '@/hooks/useAuth';
-import { platformsRepository, videosRepository } from '@/services/database';
+import { platformsRepository, usersRepository, videosRepository } from '@/services/database';
+import { generateVideoContent } from '@/services/aiGeneration';
 import type { Platform, VideoStatus } from '@/services/database/types';
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { extractFileIdFromUrl, getFileMetadata, getThumbnailUrl, isAuthenticated } from '@/services/googleDrive';
@@ -62,6 +65,28 @@ export const NewSchedulePage = () => {
   const [description, setDescription] = useState('');
   const [urlDrive, setUrlDrive] = useState('');
   const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null);
+
+  // Função wrapper para limpar URL e thumbnail
+  const handleUrlChange = useCallback((url: string) => {
+    setUrlDrive(url);
+    // Se a URL for limpa, também limpar a thumbnail
+    if (!url) {
+      // Limpar object URLs se existirem
+      if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+        URL.revokeObjectURL(videoThumbnail);
+      }
+      setVideoThumbnail(null);
+    }
+  }, [videoThumbnail]);
+
+  // Limpar object URLs quando o componente for desmontado
+  useEffect(() => {
+    return () => {
+      if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+        URL.revokeObjectURL(videoThumbnail);
+      }
+    };
+  }, [videoThumbnail]);
   const [scheduledDate, setScheduledDate] = useState<string>('');
   const [scheduledTimeDisplay, setScheduledTimeDisplay] = useState('');
   const [status, setStatus] = useState<VideoStatus>('draft');
@@ -73,6 +98,29 @@ export const NewSchedulePage = () => {
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(false);
   const [googleDriveConnectDialogOpen, setGoogleDriveConnectDialogOpen] = useState(false);
   const [checkingGoogleDrive, setCheckingGoogleDrive] = useState(false);
+  const [aiAutoGenerate, setAiAutoGenerate] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [platformHashtags, setPlatformHashtags] = useState<Record<string, string[]>>({});
+  const [aiChatDialogOpen, setAiChatDialogOpen] = useState(false);
+  const [pendingHashtags, setPendingHashtags] = useState<string[]>([]);
+
+  // Distribuir hashtags pendentes quando forem geradas ou quando plataformas forem selecionadas
+  useEffect(() => {
+    if (pendingHashtags.length > 0 && selectedPlatformIds.length > 0) {
+      // Distribuir hashtags para TODAS as plataformas selecionadas (espelhar)
+      const updated: Record<string, string[]> = { ...platformHashtags };
+
+      selectedPlatformIds.forEach((platformId) => {
+        // Sempre atualizar com as hashtags pendentes (espelhar)
+        updated[platformId] = [...pendingHashtags];
+      });
+
+      setPlatformHashtags(updated);
+      // Limpar hashtags pendentes após distribuir
+      setPendingHashtags([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingHashtags.length, selectedPlatformIds.join(',')]);
   const [formErrors, setFormErrors] = useState<{
     title?: string;
     urlDrive?: string;
@@ -174,14 +222,29 @@ export const NewSchedulePage = () => {
         setPlatformMediaTypes(platformMediaTypesMap);
       }
 
+      // Carregar platformHashtags
+      if (video.platformHashtags) {
+        // Converter de formato {platformName: hashtags[]} para {platformId: hashtags[]}
+        const platformHashtagsMap: Record<string, string[]> = {};
+        if (video.selectedPlatformIds) {
+          video.selectedPlatformIds.forEach((platformId) => {
+            const platform = connectedPlatforms.find((p) => p.id === platformId);
+            if (platform && video.platformHashtags?.[platform.name]) {
+              platformHashtagsMap[platformId] = video.platformHashtags[platform.name];
+            }
+          });
+        }
+        setPlatformHashtags(platformHashtagsMap);
+      }
+
       // Buscar thumbnail do Google Drive
       try {
         if (isValidGoogleDriveUrl(video.urlDrive)) {
           const fileId = extractFileIdFromUrl(video.urlDrive);
           if (fileId) {
             const metadata = await getFileMetadata(user.id, fileId);
-            if (metadata?.thumbnailLink) {
-              const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low');
+            if (metadata) {
+              const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
               setVideoThumbnail(thumbnail);
             }
           }
@@ -202,6 +265,20 @@ export const NewSchedulePage = () => {
     if (user?.id) {
       loadPlatforms();
       checkGoogleDriveConnection();
+      
+      // Carregar configuração de geração automática da IA
+      const loadAIConfig = async () => {
+        try {
+          const userData = await usersRepository.getById(user.id);
+          if (userData) {
+            setAiAutoGenerate(userData.aiAutoGenerate);
+          }
+        } catch (err) {
+          // Silenciosamente falhar - usuário pode não ter dados ainda
+          console.warn('Erro ao carregar configuração de IA:', err);
+        }
+      };
+      void loadAIConfig();
     }
   }, [user?.id, loadPlatforms, checkGoogleDriveConnection]);
 
@@ -301,6 +378,9 @@ export const NewSchedulePage = () => {
     async (file: GoogleDriveFile) => {
       // Preencher URL do Google Drive
       setUrlDrive(file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`);
+      
+      // Armazenar fileId para geração de IA
+      setSelectedFileId(file.id);
 
       // Preencher título se estiver vazio
       if (!title) {
@@ -308,13 +388,38 @@ export const NewSchedulePage = () => {
       }
 
       // Buscar thumbnail
-      const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low');
+      const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low', file.id, file.mimeType);
       setVideoThumbnail(thumbnail);
 
       // Limpar erro de URL
       setFormErrors((prev) => ({ ...prev, urlDrive: undefined }));
+
+      // Gerar conteúdo automaticamente se habilitado (em background, não bloquear UI)
+      if (aiAutoGenerate && user?.id && file.id) {
+        // Executar em background sem bloquear a UI
+        generateVideoContent({
+          fileId: file.id,
+          userId: user.id,
+        })
+          .then((result) => {
+            setTitle(result.title);
+            setDescription(result.description);
+            // Adicionar hashtags à descrição se não estiverem já incluídas
+            if (result.hashtags.length > 0) {
+              const hashtagsText = result.hashtags.join(' ');
+              if (!result.description.includes(hashtagsText)) {
+                setDescription(`${result.description}\n\n${hashtagsText}`);
+              }
+            }
+            showSuccess('Conteúdo gerado automaticamente pela IA!');
+          })
+          .catch((err) => {
+            // Não mostrar erro - apenas logar, pois é opcional
+            console.warn('Erro ao gerar conteúdo automaticamente:', err);
+          });
+      }
     },
-    [title],
+    [title, aiAutoGenerate, user?.id, showSuccess],
   );
 
   // Buscar thumbnail quando URL for alterada manualmente
@@ -322,19 +427,24 @@ export const NewSchedulePage = () => {
     const fetchThumbnailFromUrl = async () => {
       if (!urlDrive || !user?.id || !isValidGoogleDriveUrl(urlDrive)) {
         setVideoThumbnail(null);
+        setSelectedFileId(null);
         return;
       }
 
       const fileId = extractFileIdFromUrl(urlDrive);
       if (!fileId) {
         setVideoThumbnail(null);
+        setSelectedFileId(null);
         return;
       }
 
+      // Armazenar fileId para geração de IA
+      setSelectedFileId(fileId);
+
       try {
         const metadata = await getFileMetadata(user.id, fileId);
-        if (metadata?.thumbnailLink) {
-          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low');
+        if (metadata) {
+          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
           setVideoThumbnail(thumbnail);
         } else {
           setVideoThumbnail(null);
@@ -493,6 +603,16 @@ export const NewSchedulePage = () => {
         ? platformMediaTypes[selectedPlatformIds[0]]
         : null;
 
+      // Converter platformHashtags de {platformId: hashtags[]} para {platformName: hashtags[]}
+      const platformHashtagsMap: Record<string, string[]> = {};
+      selectedPlatformIds.forEach((platformId) => {
+        const platform = availablePlatforms.find((p) => p.id === platformId);
+        const hashtags = platformHashtags[platformId];
+        if (platform && hashtags && hashtags.length > 0) {
+          platformHashtagsMap[platform.name] = hashtags;
+        }
+      });
+
       if (isEditing && videoId) {
         // Atualizar vídeo existente
         await videosRepository.update(videoId, {
@@ -504,6 +624,7 @@ export const NewSchedulePage = () => {
           selectedPlatformIds: selectedPlatformIds.length > 0 ? selectedPlatformIds : null,
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
+          platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
         });
 
         showSuccess('Agendamento atualizado com sucesso!');
@@ -520,6 +641,7 @@ export const NewSchedulePage = () => {
           selectedPlatformIds: selectedPlatformIds.length > 0 ? selectedPlatformIds : null,
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
+          platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
         });
 
         showSuccess('Agendamento criado com sucesso!');
@@ -547,11 +669,75 @@ export const NewSchedulePage = () => {
   ]);
 
   const handleFileSelect = useCallback((file: File) => {
-    // Por enquanto, apenas mostrar que o arquivo foi selecionado
-    // Em produção, você pode fazer upload para o servidor ou armazenar localmente
-    console.log('Arquivo selecionado:', file.name, file.type);
-    // TODO: Implementar upload de arquivo local
-  }, []);
+    // Limpar thumbnail anterior se existir
+    if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
+      URL.revokeObjectURL(videoThumbnail);
+    }
+
+    // Se for uma imagem, criar URL do objeto diretamente
+    if (file.type.startsWith('image/')) {
+      const thumbnailUrl = URL.createObjectURL(file);
+      setVideoThumbnail(thumbnailUrl);
+      return;
+    }
+
+    // Se for um vídeo, criar thumbnail do primeiro frame
+    if (file.type.startsWith('video/')) {
+      const video = document.createElement('video');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const videoObjectUrl = URL.createObjectURL(file);
+
+      video.preload = 'metadata';
+      video.muted = true; // Necessário para alguns navegadores
+      video.playsInline = true; // Necessário para iOS
+
+      const cleanup = () => {
+        URL.revokeObjectURL(videoObjectUrl);
+        video.src = '';
+        video.load(); // Limpar o vídeo
+      };
+
+      video.onloadedmetadata = () => {
+        // Definir dimensões do canvas
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // Capturar o primeiro frame
+        video.currentTime = 0.1; // Ir para 0.1s para garantir que há um frame
+      };
+
+      video.onseeked = () => {
+        if (ctx) {
+          try {
+            // Desenhar o frame no canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Converter canvas para blob e criar URL
+            canvas.toBlob((blob) => {
+              if (blob) {
+                const thumbnailUrl = URL.createObjectURL(blob);
+                setVideoThumbnail(thumbnailUrl);
+              }
+              cleanup();
+            }, 'image/jpeg', 0.8);
+          } catch (err) {
+            console.error('Erro ao gerar thumbnail do vídeo:', err);
+            setVideoThumbnail(null);
+            cleanup();
+          }
+        }
+      };
+
+      video.onerror = () => {
+        // Se falhar, limpar thumbnail
+        setVideoThumbnail(null);
+        cleanup();
+      };
+
+      // Carregar o vídeo
+      video.src = videoObjectUrl;
+    }
+  }, [videoThumbnail]);
 
   const handlePublishNow = useCallback(async () => {
     if (!user?.id || !videoId) return;
@@ -702,16 +888,28 @@ export const NewSchedulePage = () => {
               <Stack spacing={3}>
                 {/* Título */}
                 <Stack spacing={1}>
-                  <AuthTextField
-                    label="Título do vídeo"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    error={Boolean(formErrors.title)}
-                    helperText={formErrors.title}
-                    fullWidth
-                    inputProps={{ maxLength: 200 }}
-                    required
-                  />
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                    <AuthTextField
+                      label="Título do vídeo"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      error={Boolean(formErrors.title)}
+                      helperText={formErrors.title}
+                      fullWidth
+                      inputProps={{ maxLength: 200 }}
+                      required
+                    />
+                    {user?.id && (
+                      <Button
+                        variant="outlined"
+                        onClick={() => setAiChatDialogOpen(true)}
+                        disabled={loading || loadingVideo}
+                        size="small"
+                      >
+                        Gerar com IA
+                      </Button>
+                    )}
+                  </Box>
                   {!formErrors.title && (
                     <CharacterCounter current={title.length} max={200} min={3} showMin />
                   )}
@@ -884,6 +1082,18 @@ export const NewSchedulePage = () => {
                   </Stack>
                 )}
 
+                {/* Gerenciador de Hashtags */}
+                {selectedPlatformIds.length > 0 && user?.id && (
+                  <Stack spacing={1}>
+                    <HashtagManager
+                      userId={user.id}
+                      selectedPlatformIds={selectedPlatformIds}
+                      platformHashtags={platformHashtags}
+                      onPlatformHashtagsChange={setPlatformHashtags}
+                    />
+                  </Stack>
+                )}
+
                 {/* Data e Hora */}
                 <Stack direction="row" spacing={2}>
                   <Stack spacing={1} sx={{ flex: 1 }}>
@@ -992,10 +1202,11 @@ export const NewSchedulePage = () => {
         <Box sx={{ flex: { xs: '1', lg: '1' }, minWidth: { xs: '100%', lg: 400 }, maxWidth: { xs: '100%', lg: 450 } }}>
           <MediaUploadArea
             urlDrive={urlDrive}
-            onUrlChange={setUrlDrive}
+            onUrlChange={handleUrlChange}
             onGoogleDriveSelect={handleGoogleDriveSelectClick}
             onFileSelect={handleFileSelect}
             thumbnail={videoThumbnail}
+            onThumbnailChange={setVideoThumbnail}
             userId={user?.id}
             isGoogleDriveConnected={isGoogleDriveConnected}
             checkingGoogleDrive={checkingGoogleDrive}
@@ -1025,6 +1236,21 @@ export const NewSchedulePage = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Dialog de Chat com IA */}
+      {user?.id && (
+        <AIChatDialog
+          open={aiChatDialogOpen}
+          userId={user.id}
+          onClose={() => setAiChatDialogOpen(false)}
+          onContentSelected={(content) => {
+            setTitle(content.title);
+            setDescription(content.description);
+            // Armazenar hashtags para distribuir quando plataformas forem selecionadas
+            setPendingHashtags(content.hashtags || []);
+          }}
+        />
+      )}
 
       {user?.id && isGoogleDriveConnected && (
         <GoogleDriveBrowser

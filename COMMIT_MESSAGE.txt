@@ -1,0 +1,22 @@
+feat: melhorias no sistema de thumbnails e suporte a imagens
+
+- Adicionada detecao automatica de dimensoes para ajuste dinamico de aspect ratio
+- Videos verticais agora usam objectFit 'contain' para nao cortar conteudo
+- Implementada geracao de thumbnails para arquivos locais (imagens e videos)
+- Adicionado suporte para selecionar imagens do Google Drive alem de videos
+- Corrigido problema de CORS usando URL do Google Drive que funciona no frontend
+- Melhorado tratamento de thumbnails com fallback automatico
+
+Arquivos modificados:
+- src/components/schedules/MediaUploadArea.tsx
+- src/services/googleDrive.ts
+- src/components/googleDrive/GoogleDriveBrowser.tsx
+- src/pages/schedules/NewSchedulePage.tsx
+- src/pages/schedules/SchedulesPage.tsx
+
+
+
+
+
+
+

@@ -19,7 +19,7 @@ import {
   Typography,
   alpha,
 } from '@mui/material';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { isValidGoogleDriveUrl } from '@/utils/validation';
@@ -30,6 +30,7 @@ interface MediaUploadAreaProps {
   onGoogleDriveSelect: () => void;
   onFileSelect?: (file: File) => void;
   thumbnail?: string | null;
+  onThumbnailChange?: (thumbnail: string | null) => void;
   userId?: string;
   isGoogleDriveConnected?: boolean;
   checkingGoogleDrive?: boolean;
@@ -41,12 +42,14 @@ export const MediaUploadArea = ({
   onGoogleDriveSelect,
   onFileSelect,
   thumbnail,
+  onThumbnailChange,
   userId,
   isGoogleDriveConnected = false,
   checkingGoogleDrive = false,
 }: MediaUploadAreaProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -98,11 +101,77 @@ export const MediaUploadArea = ({
   };
 
   const handleClear = () => {
+    // Limpar object URLs se existirem
+    if (thumbnail && thumbnail.startsWith('blob:')) {
+      URL.revokeObjectURL(thumbnail);
+    }
     onUrlChange('');
+    if (onThumbnailChange) {
+      onThumbnailChange(null);
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+    setImageDimensions(null);
   };
+
+  // Detectar dimensões da imagem quando thumbnail mudar
+  useEffect(() => {
+    if (!thumbnail) {
+      setImageDimensions(null);
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      setImageDimensions({
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+      });
+    };
+    img.onerror = () => {
+      setImageDimensions(null);
+    };
+    img.src = thumbnail;
+  }, [thumbnail]);
+
+  // Calcular aspect ratio e objectFit baseado nas dimensões
+  const getPreviewStyle = () => {
+    if (!imageDimensions) {
+      // Se não temos dimensões, usar 16:9 padrão
+      return {
+        aspectRatio: '16/9' as const,
+        objectFit: 'cover' as const,
+      };
+    }
+
+    const aspectRatio = imageDimensions.width / imageDimensions.height;
+    const isVertical = aspectRatio < 1; // Altura maior que largura
+
+    if (isVertical) {
+      // Para vídeos/imagens verticais, usar aspect ratio real e contain para não cortar
+      return {
+        aspectRatio: `${imageDimensions.width}/${imageDimensions.height}` as const,
+        objectFit: 'contain' as const,
+      };
+    } else {
+      // Para horizontais, manter 16:9 mas usar contain se for muito diferente
+      if (aspectRatio > 2) {
+        // Muito largo, usar aspect ratio real
+        return {
+          aspectRatio: `${imageDimensions.width}/${imageDimensions.height}` as const,
+          objectFit: 'contain' as const,
+        };
+      }
+      // Normal, usar 16:9 com cover
+      return {
+        aspectRatio: '16/9' as const,
+        objectFit: 'cover' as const,
+      };
+    }
+  };
+
+  const previewStyle = getPreviewStyle();
 
   return (
     <Card
@@ -129,12 +198,15 @@ export const MediaUploadArea = ({
               sx={{
                 position: 'relative',
                 width: '100%',
-                aspectRatio: '16/9',
+                aspectRatio: previewStyle.aspectRatio,
                 borderRadius: 2,
                 overflow: 'hidden',
                 border: 1,
                 borderColor: 'divider',
                 bgcolor: 'action.hover',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
             >
               <img
@@ -143,7 +215,7 @@ export const MediaUploadArea = ({
                 style={{
                   width: '100%',
                   height: '100%',
-                  objectFit: 'cover',
+                  objectFit: previewStyle.objectFit,
                 }}
               />
               <IconButton

@@ -71,3 +71,11 @@ supabase functions deploy upload-to-youtube
 - YouTube usa resumable upload para vídeos grandes
 
 
+
+
+
+
+
+
+
+
