@@ -34,13 +34,15 @@ import {
 import { AIChatDialog } from '@/components/schedules/AIChatDialog';
 import { HashtagManager } from '@/components/schedules/HashtagManager';
 import { MediaUploadArea } from '@/components/schedules/MediaUploadArea';
+import { ThumbnailUploader } from '@/components/schedules/ThumbnailUploader';
 import { GoogleDriveBrowser } from '@/components/googleDrive/GoogleDriveBrowser';
 import { useAuth } from '@/hooks/useAuth';
-import { platformsRepository, usersRepository, videosRepository } from '@/services/database';
+import { platformsRepository, usersRepository, videosRepository, postsRepository } from '@/services/database';
 import { generateVideoContent } from '@/services/aiGeneration';
 import type { Platform, VideoStatus } from '@/services/database/types';
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { extractFileIdFromUrl, getFileMetadata, getThumbnailUrl, isAuthenticated } from '@/services/googleDrive';
+import { uploadThumbnail } from '@/services/storage';
 import { mapSupabaseError } from '@/utils/errorMessages';
 import type { MediaType, PlatformType } from '@/utils/mediaTypes';
 import {
@@ -65,19 +67,30 @@ export const NewSchedulePage = () => {
   const [description, setDescription] = useState('');
   const [urlDrive, setUrlDrive] = useState('');
   const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null);
+  const [customThumbnailUrl, setCustomThumbnailUrl] = useState<string | null>(null);
+  const [customThumbnailFile, setCustomThumbnailFile] = useState<File | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null); // Duração em segundos
+  const [videoUrl, setVideoUrl] = useState<string | null>(null); // URL do vídeo para preview
 
   // Função wrapper para limpar URL e thumbnail
   const handleUrlChange = useCallback((url: string) => {
     setUrlDrive(url);
-    // Se a URL for limpa, também limpar a thumbnail
+    // Se a URL for limpa, também limpar a thumbnail, duração e URL do vídeo
     if (!url) {
+      // Limpar arquivo local se houver
+      setSelectedLocalFile(null);
       // Limpar object URLs se existirem
       if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
         URL.revokeObjectURL(videoThumbnail);
       }
+      if (videoUrl && videoUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(videoUrl);
+      }
       setVideoThumbnail(null);
+      setVideoDuration(null);
+      setVideoUrl(null);
     }
-  }, [videoThumbnail]);
+  }, [videoThumbnail, videoUrl]);
 
   // Limpar object URLs quando o componente for desmontado
   useEffect(() => {
@@ -100,6 +113,7 @@ export const NewSchedulePage = () => {
   const [checkingGoogleDrive, setCheckingGoogleDrive] = useState(false);
   const [aiAutoGenerate, setAiAutoGenerate] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  const [selectedLocalFile, setSelectedLocalFile] = useState<File | null>(null); // Arquivo local selecionado
   const [platformHashtags, setPlatformHashtags] = useState<Record<string, string[]>>({});
   const [aiChatDialogOpen, setAiChatDialogOpen] = useState(false);
   const [pendingHashtags, setPendingHashtags] = useState<string[]>([]);
@@ -127,6 +141,7 @@ export const NewSchedulePage = () => {
     scheduledDate?: string;
     platforms?: string;
     platformMediaTypes?: Record<string, string>;
+    media?: string; // Erro geral para mídia não selecionada
   }>({});
 
   const checkGoogleDriveConnection = useCallback(async () => {
@@ -189,6 +204,7 @@ export const NewSchedulePage = () => {
       setTitle(video.title);
       setDescription(video.description || '');
       setUrlDrive(video.urlDrive);
+      setCustomThumbnailUrl(video.customThumbnailUrl || null);
       
       // Preencher data e hora
       if (video.scheduledDate) {
@@ -237,15 +253,49 @@ export const NewSchedulePage = () => {
         setPlatformHashtags(platformHashtagsMap);
       }
 
-      // Buscar thumbnail do Google Drive
+      // Buscar thumbnail, duração e URL do vídeo do Google Drive
       try {
+        // Se houver thumbnail customizada, definir primeiro
+        if (video.customThumbnailUrl) {
+          setVideoThumbnail(video.customThumbnailUrl);
+        }
+        
         if (isValidGoogleDriveUrl(video.urlDrive)) {
           const fileId = extractFileIdFromUrl(video.urlDrive);
           if (fileId) {
             const metadata = await getFileMetadata(user.id, fileId);
             if (metadata) {
-              const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
-              setVideoThumbnail(thumbnail);
+              // Só buscar thumbnail do Google Drive se não houver thumbnail customizada
+              if (!video.customThumbnailUrl) {
+                const thumbnail = await getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType, user.id);
+                if (thumbnail) {
+                  setVideoThumbnail(thumbnail);
+                }
+              }
+              
+              // Se for um vídeo, buscar duração e configurar URL para preview
+              if (metadata.mimeType?.startsWith('video/')) {
+                // Buscar duração
+                if (metadata.videoMediaMetadata?.durationMillis) {
+                  const durationSeconds = Math.floor(parseInt(metadata.videoMediaMetadata.durationMillis, 10) / 1000);
+                  setVideoDuration(durationSeconds);
+                } else {
+                  setVideoDuration(null);
+                }
+                
+                // Configurar URL do vídeo para preview usando Edge Function
+                const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+                if (supabaseUrl) {
+                  // Usar a Edge Function proxy-google-drive-video com userId
+                  setVideoUrl(`${supabaseUrl}/functions/v1/proxy-google-drive-video?fileId=${fileId}&userId=${user.id}`);
+                } else {
+                  // Fallback: URL direta (pode não funcionar sem autenticação)
+                  setVideoUrl(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+                }
+              } else {
+                setVideoDuration(null);
+                setVideoUrl(null);
+              }
             }
           }
         }
@@ -376,8 +426,12 @@ export const NewSchedulePage = () => {
 
   const handleGoogleDriveSelect = useCallback(
     async (file: GoogleDriveFile) => {
+      // Limpar arquivo local se houver
+      setSelectedLocalFile(null);
+      
       // Preencher URL do Google Drive
-      setUrlDrive(file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`);
+      const driveUrl = file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`;
+      setUrlDrive(driveUrl);
       
       // Armazenar fileId para geração de IA
       setSelectedFileId(file.id);
@@ -387,9 +441,52 @@ export const NewSchedulePage = () => {
         setTitle(file.name.replace(/\.[^/.]+$/, '')); // Remover extensão do nome
       }
 
-      // Buscar thumbnail
-      const thumbnail = getThumbnailUrl(file.thumbnailLink, 'low', file.id, file.mimeType);
-      setVideoThumbnail(thumbnail);
+      // Buscar thumbnail apenas se não houver thumbnail customizada
+      // Verificar customThumbnailUrl para garantir prioridade
+      if (!customThumbnailUrl) {
+        const thumbnail = await getThumbnailUrl(file.thumbnailLink, 'low', file.id, file.mimeType, user.id);
+        if (thumbnail) {
+          // Verificar novamente antes de definir (pode ter sido definida durante a busca assíncrona)
+          if (!customThumbnailUrl) {
+            setVideoThumbnail(thumbnail);
+          }
+        }
+      }
+
+      // Buscar duração do vídeo se for um vídeo
+      if (file.mimeType?.startsWith('video/')) {
+        if (file.videoMediaMetadata?.durationMillis) {
+          const durationSeconds = Math.floor(parseInt(file.videoMediaMetadata.durationMillis, 10) / 1000);
+          setVideoDuration(durationSeconds);
+        } else {
+          // Se não tiver duração nos metadados, buscar novamente com campos completos
+          try {
+            const metadata = await getFileMetadata(user.id, file.id);
+            if (metadata?.videoMediaMetadata?.durationMillis) {
+              const durationSeconds = Math.floor(parseInt(metadata.videoMediaMetadata.durationMillis, 10) / 1000);
+              setVideoDuration(durationSeconds);
+            } else {
+              setVideoDuration(null);
+            }
+          } catch (err) {
+            console.warn('Erro ao buscar duração do vídeo:', err);
+            setVideoDuration(null);
+          }
+        }
+        
+        // Definir URL do vídeo para preview usando Edge Function
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        if (supabaseUrl) {
+          // Usar a Edge Function proxy-google-drive-video com userId
+          setVideoUrl(`${supabaseUrl}/functions/v1/proxy-google-drive-video?fileId=${file.id}&userId=${user.id}`);
+        } else {
+          // Fallback: URL direta (pode não funcionar sem autenticação)
+          setVideoUrl(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`);
+        }
+      } else {
+        setVideoDuration(null);
+        setVideoUrl(null);
+      }
 
       // Limpar erro de URL
       setFormErrors((prev) => ({ ...prev, urlDrive: undefined }));
@@ -419,21 +516,27 @@ export const NewSchedulePage = () => {
           });
       }
     },
-    [title, aiAutoGenerate, user?.id, showSuccess],
+    [title, aiAutoGenerate, user?.id, showSuccess, customThumbnailUrl],
   );
 
   // Buscar thumbnail quando URL for alterada manualmente
   useEffect(() => {
     const fetchThumbnailFromUrl = async () => {
       if (!urlDrive || !user?.id || !isValidGoogleDriveUrl(urlDrive)) {
-        setVideoThumbnail(null);
+        // Só limpar se não houver thumbnail customizada
+        if (!customThumbnailUrl) {
+          setVideoThumbnail(null);
+        }
         setSelectedFileId(null);
         return;
       }
 
       const fileId = extractFileIdFromUrl(urlDrive);
       if (!fileId) {
-        setVideoThumbnail(null);
+        // Só limpar se não houver thumbnail customizada
+        if (!customThumbnailUrl) {
+          setVideoThumbnail(null);
+        }
         setSelectedFileId(null);
         return;
       }
@@ -441,17 +544,36 @@ export const NewSchedulePage = () => {
       // Armazenar fileId para geração de IA
       setSelectedFileId(fileId);
 
+      // Se já houver thumbnail customizada, não buscar do Google Drive
+      if (customThumbnailUrl) {
+        return;
+      }
+
       try {
-        const metadata = await getFileMetadata(user.id, fileId);
-        if (metadata) {
-          const thumbnail = getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType);
-          setVideoThumbnail(thumbnail);
+            const metadata = await getFileMetadata(user.id, fileId);
+            if (metadata) {
+              // Só buscar thumbnail do Google Drive se não houver thumbnail customizada
+              // Verificar novamente customThumbnailUrl para garantir que não foi definida durante a busca
+              if (!customThumbnailUrl) {
+                const thumbnail = await getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType, user.id);
+                if (thumbnail) {
+                  // Verificar novamente antes de definir (pode ter sido definida durante a busca assíncrona)
+                  if (!customThumbnailUrl) {
+                    setVideoThumbnail(thumbnail);
+                  }
+                }
+              }
         } else {
-          setVideoThumbnail(null);
+          // Só limpar se não houver thumbnail customizada
+          if (!customThumbnailUrl) {
+            setVideoThumbnail(null);
+          }
         }
       } catch (err) {
-        // Se falhar, apenas não mostrar thumbnail
-        setVideoThumbnail(null);
+        // Se falhar, apenas não mostrar thumbnail se não houver customizada
+        if (!customThumbnailUrl) {
+          setVideoThumbnail(null);
+        }
       }
     };
 
@@ -460,7 +582,7 @@ export const NewSchedulePage = () => {
     }, 500); // Debounce de 500ms
 
     return () => clearTimeout(timeoutId);
-  }, [urlDrive, user?.id]);
+  }, [urlDrive, user?.id, customThumbnailUrl]);
 
   const validateForm = useCallback(() => {
     const errors: {
@@ -469,6 +591,7 @@ export const NewSchedulePage = () => {
       scheduledDate?: string;
       platforms?: string;
       platformMediaTypes?: Record<string, string>;
+      media?: string; // Erro geral para mídia não selecionada
     } = {};
 
     if (!title.trim()) {
@@ -479,9 +602,14 @@ export const NewSchedulePage = () => {
       errors.title = 'O título não pode ter mais de 200 caracteres.';
     }
 
-    if (!urlDrive.trim()) {
-      errors.urlDrive = 'Informe a URL do Google Drive.';
-    } else if (!isValidGoogleDriveUrl(urlDrive.trim())) {
+    // Validar se há mídia selecionada (arquivo local OU URL do Google Drive)
+    const hasLocalFile = selectedLocalFile !== null;
+    const hasGoogleDriveUrl = urlDrive.trim().length > 0 && isValidGoogleDriveUrl(urlDrive.trim());
+    
+    if (!hasLocalFile && !hasGoogleDriveUrl) {
+      errors.media = 'Selecione um vídeo ou imagem. Faça upload de um arquivo local ou selecione um arquivo do Google Drive.';
+      errors.urlDrive = 'Selecione um vídeo ou imagem para continuar.';
+    } else if (hasGoogleDriveUrl && !isValidGoogleDriveUrl(urlDrive.trim())) {
       errors.urlDrive =
         'Informe uma URL válida do Google Drive. Exemplo: https://drive.google.com/file/d/ID_DO_ARQUIVO/view';
     }
@@ -558,7 +686,14 @@ export const NewSchedulePage = () => {
     }
 
     setFormErrors(errors);
-    return Object.keys(errors).length === 0;
+    const isValid = Object.keys(errors).length === 0;
+    
+    // Se houver erro de mídia, mostrar toast
+    if (!isValid && errors.media) {
+      showError(errors.media);
+    }
+    
+    return isValid;
   }, [
     title,
     urlDrive,
@@ -567,6 +702,8 @@ export const NewSchedulePage = () => {
     selectedPlatformIds,
     platformMediaTypes,
     availablePlatforms,
+    selectedLocalFile,
+    showError,
   ]);
 
   const handleSave = useCallback(async () => {
@@ -575,15 +712,45 @@ export const NewSchedulePage = () => {
     try {
       setLoading(true);
 
-      // Converter data e hora para ISO string
+      // Converter data e hora para ISO string em UTC
+      // IMPORTANTE: O YouTube espera o publishAt em formato ISO 8601 UTC (YYYY-MM-DDThh:mm:ssZ)
+      // Criar a data no horário local e depois converter para UTC
       let scheduledDateISO: string | null = null;
       if (scheduledDate && scheduledTimeDisplay) {
         const timeMatch = scheduledTimeDisplay.match(/^(\d{2}):(\d{2})$/);
         if (timeMatch) {
           const [, hours, minutes] = timeMatch;
           // scheduledDate já está no formato YYYY-MM-DD
-          const date = new Date(`${scheduledDate}T${hours}:${minutes}:00`);
-          scheduledDateISO = date.toISOString();
+          // Criar data no horário local usando o construtor Date com parâmetros locais
+          // Isso garante que a data seja interpretada no timezone local do navegador
+          const [year, month, day] = scheduledDate.split('-').map(Number);
+          const localDate = new Date(year, month - 1, day, parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+          
+          // Converter para ISO string (UTC) - formato esperado pelo YouTube
+          // O YouTube espera: YYYY-MM-DDThh:mm:ssZ (sem milissegundos)
+          const isoString = localDate.toISOString();
+          // Remover milissegundos: 2025-12-09T14:45:00.000Z -> 2025-12-09T14:45:00Z
+          scheduledDateISO = isoString.replace(/\.\d{3}Z$/, 'Z');
+          
+          // Verificar o timezone do usuário para logs
+          const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const timezoneOffset = -localDate.getTimezoneOffset(); // Offset em minutos
+          
+          console.log('[NewSchedulePage] Conversão de data/hora:', {
+            input: { scheduledDate, scheduledTimeDisplay },
+            userTimezone,
+            timezoneOffsetMinutes: timezoneOffset,
+            timezoneOffsetHours: timezoneOffset / 60,
+            localDateString: localDate.toLocaleString('pt-BR', { timeZone: userTimezone }),
+            localTimeString: localDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: userTimezone }),
+            utcDateString: localDate.toUTCString(),
+            isoString: scheduledDateISO,
+            // Verificar se a conversão está correta
+            expectedLocalTime: `${hours}:${minutes}`,
+            actualLocalTime: localDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: userTimezone }),
+            // Verificar UTC equivalente
+            utcTime: new Date(scheduledDateISO).toUTCString(),
+          });
         }
       }
 
@@ -613,9 +780,20 @@ export const NewSchedulePage = () => {
         }
       });
 
+      // Upload da thumbnail personalizada se houver arquivo
+      let finalThumbnailUrl = customThumbnailUrl;
+      if (customThumbnailFile) {
+        const tempVideoId = videoId || `temp-${Date.now()}`;
+        const uploadedUrl = await uploadThumbnail(user.id, tempVideoId, customThumbnailFile);
+        if (uploadedUrl) {
+          finalThumbnailUrl = uploadedUrl;
+        }
+      }
+
+      let savedVideo;
       if (isEditing && videoId) {
         // Atualizar vídeo existente
-        await videosRepository.update(videoId, {
+        savedVideo = await videosRepository.update(videoId, {
           title,
           description: description || null,
           urlDrive,
@@ -625,13 +803,19 @@ export const NewSchedulePage = () => {
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
           platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
+          customThumbnailUrl: finalThumbnailUrl,
         });
 
-        showSuccess('Agendamento atualizado com sucesso!');
-        navigate(`/videos/${videoId}`);
+        // Se o vídeo foi criado com ID temporário e agora temos o ID real, fazer upload novamente
+        if (customThumbnailFile && savedVideo.id !== videoId) {
+          const uploadedUrl = await uploadThumbnail(user.id, savedVideo.id, customThumbnailFile);
+          if (uploadedUrl) {
+            savedVideo = await videosRepository.update(savedVideo.id, { customThumbnailUrl: uploadedUrl });
+          }
+        }
       } else {
         // Criar novo vídeo
-        await videosRepository.create({
+        savedVideo = await videosRepository.create({
           userId: user.id,
           title,
           description: description || null,
@@ -642,9 +826,290 @@ export const NewSchedulePage = () => {
           mediaType: primaryMediaType,
           platformMediaTypes: Object.keys(platformMediaTypesMap).length > 0 ? platformMediaTypesMap : null,
           platformHashtags: Object.keys(platformHashtagsMap).length > 0 ? platformHashtagsMap : null,
+          customThumbnailUrl: finalThumbnailUrl,
         });
 
-        showSuccess('Agendamento criado com sucesso!');
+        // Se a thumbnail foi feita com ID temporário, fazer upload novamente com o ID real
+        if (customThumbnailFile && savedVideo.id) {
+          const uploadedUrl = await uploadThumbnail(user.id, savedVideo.id, customThumbnailFile);
+          if (uploadedUrl) {
+            savedVideo = await videosRepository.update(savedVideo.id, { customThumbnailUrl: uploadedUrl });
+          }
+        }
+      }
+
+      // Se há data agendada e plataformas selecionadas, enviar imediatamente para a plataforma
+      console.log('[NewSchedulePage] ===== VERIFICANDO CONDIÇÕES PARA UPLOAD =====');
+      console.log('[NewSchedulePage] Verificando condições para upload:', {
+        scheduledDateISO,
+        scheduledDate,
+        scheduledTimeDisplay,
+        selectedPlatformIds: selectedPlatformIds.length,
+        selectedPlatformIdsArray: selectedPlatformIds,
+        hasSupabaseUrl: !!import.meta.env.VITE_SUPABASE_URL,
+        hasSupabaseAnonKey: !!import.meta.env.VITE_SUPABASE_ANON_KEY,
+        savedVideoId: savedVideo?.id,
+        savedVideoUrlDrive: savedVideo?.urlDrive,
+      });
+
+      if (scheduledDateISO && selectedPlatformIds.length > 0) {
+        console.log('[NewSchedulePage] ✓ Condições atendidas, iniciando upload...');
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+        if (supabaseUrl && supabaseAnonKey) {
+          const { supabaseClient } = await import('@/services/supabaseClient');
+          const {
+            data: { session },
+          } = await supabaseClient.auth.getSession();
+
+          console.log('[NewSchedulePage] Session:', { hasSession: !!session });
+
+          if (session) {
+            // Preparar descrição com hashtags
+            let descriptionWithHashtags = description || '';
+            selectedPlatformIds.forEach((platformId) => {
+              const platform = availablePlatforms.find((p) => p.id === platformId);
+              const hashtags = platformHashtags[platformId];
+              if (platform && hashtags && hashtags.length > 0) {
+                const platformInfo = getPlatformInfo(platform.name);
+                if (platformInfo?.name === 'youtube') {
+                  // Para YouTube, adicionar #Shorts se for shorts
+                  const mediaType = platformMediaTypes[platformId];
+                  if (mediaType === 'youtube-shorts') {
+                    if (!descriptionWithHashtags.includes('#Shorts')) {
+                      descriptionWithHashtags = `#Shorts\n\n${descriptionWithHashtags}`;
+                    }
+                  }
+                  // Adicionar hashtags ao final
+                  if (hashtags.length > 0) {
+                    descriptionWithHashtags += `\n\n${hashtags.join(' ')}`;
+                  }
+                } else {
+                  // Para outras plataformas, apenas adicionar hashtags
+                  if (hashtags.length > 0) {
+                    descriptionWithHashtags += `\n\n${hashtags.join(' ')}`;
+                  }
+                }
+              }
+            });
+
+            // Enviar para cada plataforma selecionada
+            console.log('[NewSchedulePage] Plataformas selecionadas:', selectedPlatformIds);
+            console.log('[NewSchedulePage] Plataformas disponíveis:', availablePlatforms.map(p => ({ id: p.id, name: p.name })));
+            
+            for (const platformId of selectedPlatformIds) {
+              const platform = availablePlatforms.find((p) => p.id === platformId);
+              console.log('[NewSchedulePage] Processando plataforma:', { platformId, platform: platform ? { id: platform.id, name: platform.name } : null });
+              
+              if (!platform) {
+                console.warn('[NewSchedulePage] Plataforma não encontrada:', platformId);
+                continue;
+              }
+
+              const platformInfo = getPlatformInfo(platform.name);
+              console.log('[NewSchedulePage] Platform info:', { name: platform.name, platformInfo: platformInfo?.name });
+              
+              if (platformInfo?.name === 'youtube') {
+                console.log('[NewSchedulePage] Plataforma é YouTube, iniciando processo...');
+                // Verificar se já existe um post para esta plataforma
+                const existingPosts = await postsRepository.listByVideo(savedVideo.id);
+                let post = existingPosts.find((p) => p.platformId === platformId);
+
+                if (!post) {
+                  console.log('[NewSchedulePage] Criando novo post...');
+                  // Criar post
+                  const newPost = await postsRepository.create({
+                    videoId: savedVideo.id,
+                    platformId: platform.id,
+                    status: 'pending',
+                  });
+                  post = newPost; // RepositoryResult é Promise<T>, não { data: T }
+                  console.log('[NewSchedulePage] Post criado:', post ? { id: post.id } : null);
+                }
+
+                if (post) {
+                  console.log('[NewSchedulePage] Post disponível, verificando se já foi enviado...');
+                  // Determinar se é Shorts
+                  const mediaType = platformMediaTypes[platformId];
+                  const isShorts = mediaType === 'youtube-shorts';
+
+                  // Se o vídeo já foi enviado (tem platformVideoId), fazer update
+                  if (post.platformVideoId) {
+                    try {
+                      const updateResponse = await fetch(`${supabaseUrl}/functions/v1/update-youtube-video`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          Authorization: `Bearer ${session.access_token}`,
+                          apikey: supabaseAnonKey,
+                        },
+                        body: JSON.stringify({
+                          platformVideoId: post.platformVideoId,
+                          platformId: platform.id,
+                          userId: user.id,
+                          title: savedVideo.title,
+                          description: descriptionWithHashtags,
+                          publishAt: scheduledDateISO,
+                          customThumbnailUrl: finalThumbnailUrl || undefined,
+                          isShorts: isShorts,
+                        }),
+                      });
+
+                      if (updateResponse.ok) {
+                        // Atualizar status do vídeo
+                        await videosRepository.update(savedVideo.id, {
+                          status: 'scheduled',
+                        });
+                      } else {
+                        const errorData = await updateResponse.json();
+                        console.error('[NewSchedulePage] Erro ao atualizar vídeo:', errorData);
+                        // Atualizar post com erro
+                        await postsRepository.update(post.id, {
+                          status: 'failed',
+                          errorMessage: errorData.error || 'Erro ao atualizar vídeo',
+                        });
+                      }
+                    } catch (updateError) {
+                      console.error('[NewSchedulePage] Erro ao atualizar vídeo:', updateError);
+                      await postsRepository.update(post.id, {
+                        status: 'failed',
+                        errorMessage: updateError instanceof Error ? updateError.message : 'Erro desconhecido',
+                      });
+                    }
+                  } else {
+                    // Vídeo ainda não foi enviado, fazer upload imediato com publishAt
+                    console.log('[NewSchedulePage] Vídeo ainda não foi enviado, fazendo upload...');
+                    console.log('[NewSchedulePage] Dados do upload:', {
+                      videoId: savedVideo.id,
+                      videoUrl: savedVideo.urlDrive,
+                      platformId: platform.id,
+                      publishAt: scheduledDateISO,
+                      isShorts,
+                      hasThumbnail: !!finalThumbnailUrl,
+                      title: savedVideo.title,
+                      descriptionLength: descriptionWithHashtags.length,
+                    });
+                    try {
+                      console.log('[NewSchedulePage] Iniciando upload para YouTube:', {
+                        videoId: savedVideo.id,
+                        platformId: platform.id,
+                        publishAt: scheduledDateISO,
+                        isShorts,
+                        hasThumbnail: !!finalThumbnailUrl,
+                      });
+
+                      const uploadPayload = {
+                        videoUrl: savedVideo.urlDrive,
+                        title: savedVideo.title,
+                        description: descriptionWithHashtags,
+                        privacyStatus: 'private', // Será alterado para private automaticamente quando publishAt for fornecido
+                        platformId: platform.id,
+                        userId: user.id,
+                        customThumbnailUrl: finalThumbnailUrl || undefined,
+                        isShorts: isShorts,
+                        publishAt: scheduledDateISO, // Agendamento nativo do YouTube
+                      };
+                      
+                      console.log('[NewSchedulePage] 📤 Enviando requisição para upload-to-youtube:', {
+                        url: `${supabaseUrl}/functions/v1/upload-to-youtube`,
+                        payload: {
+                          ...uploadPayload,
+                          description: uploadPayload.description?.substring(0, 100) + '...',
+                          publishAt: uploadPayload.publishAt, // Log explícito do publishAt
+                          publishAtType: typeof uploadPayload.publishAt,
+                          publishAtLength: uploadPayload.publishAt?.length,
+                        },
+                      });
+
+                      const uploadResponse = await fetch(`${supabaseUrl}/functions/v1/upload-to-youtube`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          Authorization: `Bearer ${session.access_token}`,
+                          apikey: supabaseAnonKey,
+                        },
+                        body: JSON.stringify(uploadPayload),
+                      });
+                      
+                      console.log('[NewSchedulePage] 📥 Resposta recebida do upload-to-youtube:', {
+                        status: uploadResponse.status,
+                        statusText: uploadResponse.statusText,
+                        ok: uploadResponse.ok,
+                        headers: Object.fromEntries(uploadResponse.headers.entries()),
+                      });
+
+                      console.log('[NewSchedulePage] Resposta do upload:', {
+                        status: uploadResponse.status,
+                        ok: uploadResponse.ok,
+                      });
+
+                      if (uploadResponse.ok) {
+                        const uploadData = await uploadResponse.json();
+                        console.log('[NewSchedulePage] Upload bem-sucedido:', uploadData);
+                        // Atualizar post com platformVideoId e status
+                        await postsRepository.update(post.id, {
+                          platformVideoId: uploadData.videoId || uploadData.platformVideoId,
+                          status: 'posted',
+                        });
+                        // Atualizar status do vídeo
+                        await videosRepository.update(savedVideo.id, {
+                          status: 'scheduled',
+                        });
+                        showSuccess(`Vídeo enviado para o YouTube e agendado para ${new Date(scheduledDateISO).toLocaleString('pt-BR')}`);
+                      } else {
+                        const errorText = await uploadResponse.text();
+                        let errorData;
+                        try {
+                          errorData = JSON.parse(errorText);
+                        } catch {
+                          errorData = { error: errorText || 'Erro desconhecido' };
+                        }
+                        console.error('[NewSchedulePage] Erro ao fazer upload:', errorData);
+                        // Atualizar post com erro
+                        await postsRepository.update(post.id, {
+                          status: 'failed',
+                          errorMessage: errorData.error || 'Erro ao fazer upload',
+                        });
+                        showError(`Erro ao enviar vídeo para YouTube: ${errorData.error || 'Erro desconhecido'}`);
+                      }
+                    } catch (uploadError) {
+                      console.error('[NewSchedulePage] Erro ao fazer upload:', uploadError);
+                      const errorMessage = uploadError instanceof Error ? uploadError.message : 'Erro desconhecido';
+                      await postsRepository.update(post.id, {
+                        status: 'failed',
+                        errorMessage: errorMessage,
+                      });
+                      showError(`Erro ao enviar vídeo para YouTube: ${errorMessage}`);
+                    }
+                  }
+                }
+              }
+              // TODO: Adicionar suporte para outras plataformas (TikTok, Instagram) aqui
+            }
+          } else {
+            console.warn('[NewSchedulePage] Session não encontrada, não é possível fazer upload');
+          }
+        } else {
+          console.warn('[NewSchedulePage] ⚠ Supabase URL ou Anon Key não configurados');
+        }
+      } else {
+        console.warn('[NewSchedulePage] ⚠ Condições NÃO atendidas para upload:', {
+          hasScheduledDate: !!scheduledDateISO,
+          scheduledDateISO,
+          hasPlatforms: selectedPlatformIds.length > 0,
+          selectedPlatformIdsCount: selectedPlatformIds.length,
+        });
+      }
+
+      // Aguardar um pouco antes de navegar para garantir que os logs sejam visíveis
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      if (isEditing && videoId) {
+        showSuccess('Agendamento atualizado com sucesso!');
+        navigate(`/videos/${videoId}`);
+      } else {
+        showSuccess('Agendamento criado e enviado para a plataforma!');
         navigate('/schedules');
       }
     } catch (err) {
@@ -669,6 +1134,15 @@ export const NewSchedulePage = () => {
   ]);
 
   const handleFileSelect = useCallback((file: File) => {
+    // Armazenar arquivo local selecionado
+    setSelectedLocalFile(file);
+    
+    // Limpar URL do Google Drive se houver
+    if (urlDrive) {
+      setUrlDrive('');
+      setSelectedFileId(null);
+    }
+    
     // Limpar thumbnail anterior se existir
     if (videoThumbnail && videoThumbnail.startsWith('blob:')) {
       URL.revokeObjectURL(videoThumbnail);
@@ -678,6 +1152,8 @@ export const NewSchedulePage = () => {
     if (file.type.startsWith('image/')) {
       const thumbnailUrl = URL.createObjectURL(file);
       setVideoThumbnail(thumbnailUrl);
+      setVideoDuration(null);
+      setVideoUrl(null);
       return;
     }
 
@@ -702,6 +1178,13 @@ export const NewSchedulePage = () => {
         // Definir dimensões do canvas
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
+
+        // Obter duração do vídeo
+        const duration = Math.floor(video.duration);
+        setVideoDuration(duration || null);
+        
+        // Definir URL do vídeo para preview
+        setVideoUrl(videoObjectUrl);
 
         // Capturar o primeiro frame
         video.currentTime = 0.1; // Ir para 0.1s para garantir que há um frame
@@ -731,6 +1214,8 @@ export const NewSchedulePage = () => {
       video.onerror = () => {
         // Se falhar, limpar thumbnail
         setVideoThumbnail(null);
+        setVideoDuration(null);
+        setVideoUrl(null);
         cleanup();
       };
 
@@ -886,6 +1371,19 @@ export const NewSchedulePage = () => {
           <Card>
             <CardContent>
               <Stack spacing={3}>
+                {/* Alerta de mídia não selecionada */}
+                {formErrors.media && (
+                  <Alert severity="error" onClose={() => {
+                    setFormErrors((prev) => {
+                      const updated = { ...prev };
+                      delete updated.media;
+                      return updated;
+                    });
+                  }}>
+                    {formErrors.media}
+                  </Alert>
+                )}
+                
                 {/* Título */}
                 <Stack spacing={1}>
                   <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
@@ -1094,6 +1592,50 @@ export const NewSchedulePage = () => {
                   </Stack>
                 )}
 
+                {/* Capa Personalizada */}
+                {user?.id && (
+                  <ThumbnailUploader
+                    userId={user.id}
+                    videoId={videoId}
+                    currentThumbnailUrl={customThumbnailUrl}
+                    onThumbnailChange={(url, file) => {
+                      setCustomThumbnailUrl(url);
+                      setCustomThumbnailFile(file || null);
+                      // Quando uma thumbnail customizada é adicionada, substituir a do Google Drive
+                      if (url) {
+                        setVideoThumbnail(url);
+                      } else {
+                        // Se a thumbnail customizada foi removida, restaurar a do Google Drive se houver
+                        if (urlDrive && user?.id && isValidGoogleDriveUrl(urlDrive)) {
+                          const fileId = extractFileIdFromUrl(urlDrive);
+                          if (fileId) {
+                            // Buscar thumbnail do Google Drive em background
+                            getFileMetadata(user.id, fileId)
+                              .then((metadata) => {
+                                if (metadata?.thumbnailLink) {
+                                  return getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType, user.id);
+                                }
+                                return null;
+                              })
+                              .then((thumbnail) => {
+                                if (thumbnail) {
+                                  setVideoThumbnail(thumbnail);
+                                }
+                              })
+                              .catch((err) => {
+                                console.warn('[NewSchedulePage] Erro ao restaurar thumbnail do Google Drive:', err);
+                              });
+                          }
+                        }
+                      }
+                    }}
+                    disabled={loading}
+                    selectedMediaTypes={Object.values(platformMediaTypes).filter(
+                      (mt): mt is MediaType => mt !== null && mt !== undefined,
+                    )}
+                  />
+                )}
+
                 {/* Data e Hora */}
                 <Stack direction="row" spacing={2}>
                   <Stack spacing={1} sx={{ flex: 1 }}>
@@ -1124,32 +1666,40 @@ export const NewSchedulePage = () => {
                   </Stack>
 
               <Stack spacing={1} sx={{ flex: 1 }}>
-                <TextField
-                  label="Hora de agendamento"
-                  value={scheduledTimeDisplay}
-                  onChange={(e) => {
-                    let value = e.target.value;
-                    value = value.replace(/[^\d:]/g, '');
-
-                    if (value.length <= 2) {
-                      setScheduledTimeDisplay(value);
-                    } else if (value.length <= 5) {
-                      if (value.length === 3 && !value.includes(':')) {
-                        value = value.slice(0, 2) + ':' + value.slice(2);
-                      }
-                      setScheduledTimeDisplay(value);
-                    } else {
-                      setScheduledTimeDisplay(value.slice(0, 5));
-                    }
-                  }}
-                  placeholder="HH:mm"
-                  error={Boolean(formErrors.scheduledDate)}
-                  fullWidth
-                  slotProps={{
-                    inputLabel: { shrink: true },
-                  }}
-                  helperText="Ex: 14:30"
-                />
+                <FormControl fullWidth error={Boolean(formErrors.scheduledDate)}>
+                  <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                    Hora de agendamento
+                  </Typography>
+                  <Select
+                    value={scheduledTimeDisplay}
+                    onChange={(e) => setScheduledTimeDisplay(e.target.value)}
+                    displayEmpty
+                    fullWidth
+                  >
+                    <MenuItem value="">
+                      <em>Selecione a hora</em>
+                    </MenuItem>
+                    {Array.from({ length: 96 }, (_, i) => {
+                      // 96 = 24 horas * 4 (intervalos de 15 minutos)
+                      const hours = Math.floor(i / 4);
+                      const minutes = (i % 4) * 15;
+                      const timeString = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+                      return (
+                        <MenuItem key={timeString} value={timeString}>
+                          {timeString}
+                        </MenuItem>
+                      );
+                    })}
+                  </Select>
+                  {formErrors.scheduledDate && (
+                    <FormHelperText>{formErrors.scheduledDate}</FormHelperText>
+                  )}
+                  {!formErrors.scheduledDate && (
+                    <FormHelperText>
+                      Horários disponíveis em intervalos de 15 minutos (conforme YouTube)
+                    </FormHelperText>
+                  )}
+                </FormControl>
               </Stack>
             </Stack>
             {formErrors.scheduledDate && (
@@ -1210,6 +1760,8 @@ export const NewSchedulePage = () => {
             userId={user?.id}
             isGoogleDriveConnected={isGoogleDriveConnected}
             checkingGoogleDrive={checkingGoogleDrive}
+            videoDuration={videoDuration}
+            videoUrl={videoUrl}
           />
         </Box>
       </Box>

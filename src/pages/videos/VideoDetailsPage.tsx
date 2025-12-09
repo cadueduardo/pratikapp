@@ -2,6 +2,9 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import EditIcon from '@mui/icons-material/Edit';
 import LinkIcon from '@mui/icons-material/Link';
 import PublishIcon from '@mui/icons-material/Publish';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import CloseIcon from '@mui/icons-material/Close';
+import DeleteIcon from '@mui/icons-material/Delete';
 import {
   Box,
   Button,
@@ -9,19 +12,27 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
   IconButton,
   Stack,
   Typography,
+  alpha,
 } from '@mui/material';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { LoadingButton, StatusChip, useNotification } from '@/components/common';
+import { LoadingButton, StatusChip, useNotification, ConfirmDialog } from '@/components/common';
 import { useVideoDetails } from '@/hooks/useVideoDetails';
 import { videosRepository } from '@/services/database';
 import { mapSupabaseError } from '@/utils/errorMessages';
 import { getPlatformInfo } from '@/utils/platforms';
+import { useAuth } from '@/hooks/useAuth';
+import { getFileMetadata, getThumbnailUrl, extractFileIdFromUrl } from '@/services/googleDrive';
+import { isValidGoogleDriveUrl } from '@/utils/validation';
+import { formatDurationFromSeconds } from '@/utils/formatDuration';
 
 const getPlatformName = (platformId: string, platforms: Array<{ id: string; name: string }>) => {
   return platforms.find((p) => p.id === platformId)?.name || 'Plataforma desconhecida';
@@ -31,8 +42,19 @@ export const VideoDetailsPage = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { showSuccess, showError } = useNotification();
+  const { user } = useAuth();
   const { video, posts, platforms, loading, error } = useVideoDetails(id);
   const [publishingNow, setPublishingNow] = useState(false);
+  const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
+  const [authenticatedVideoUrl, setAuthenticatedVideoUrl] = useState<string | null>(null);
+  const [loadingVideoUrl, setLoadingVideoUrl] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const previousVideoUrlRef = useRef<string | null>(null);
+  const authenticatedVideoUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (error) {
@@ -98,6 +120,170 @@ export const VideoDetailsPage = () => {
     }
   }, [id, showSuccess, showError]);
 
+  const handleDeleteClick = useCallback(() => {
+    setDeleteConfirmOpen(true);
+  }, []);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!id) return;
+
+    try {
+      setDeleting(true);
+      await videosRepository.remove(id);
+      showSuccess('Agendamento excluído com sucesso!');
+      navigate('/schedules');
+    } catch (err) {
+      showError(mapSupabaseError(err instanceof Error ? err : undefined));
+    } finally {
+      setDeleting(false);
+      setDeleteConfirmOpen(false);
+    }
+  }, [id, navigate, showSuccess, showError]);
+
+  const handleDeleteCancel = useCallback(() => {
+    setDeleteConfirmOpen(false);
+  }, []);
+
+  // Carregar thumbnail, duração e URL do vídeo quando o vídeo for carregado
+  useEffect(() => {
+    if (!video || !user?.id) return;
+
+    const loadVideoMedia = async () => {
+      try {
+        // Priorizar thumbnail customizada se existir
+        if (video.customThumbnailUrl) {
+          setVideoThumbnail(video.customThumbnailUrl);
+        }
+
+        // Se tiver URL do Google Drive, buscar metadados
+        if (video.urlDrive && isValidGoogleDriveUrl(video.urlDrive)) {
+          const fileId = extractFileIdFromUrl(video.urlDrive);
+          if (fileId) {
+            const metadata = await getFileMetadata(user.id, fileId);
+            if (metadata) {
+              // Se não tiver thumbnail customizada, buscar do Google Drive
+              if (!video.customThumbnailUrl) {
+                const thumbnail = await getThumbnailUrl(metadata.thumbnailLink, 'low', metadata.id, metadata.mimeType, user.id);
+                if (thumbnail) {
+                  setVideoThumbnail(thumbnail);
+                }
+              }
+              
+              // Se for um vídeo, buscar duração e configurar URL para preview
+              if (metadata.mimeType?.startsWith('video/')) {
+                // Buscar duração
+                if (metadata.videoMediaMetadata?.durationMillis) {
+                  const durationSeconds = Math.floor(parseInt(metadata.videoMediaMetadata.durationMillis, 10) / 1000);
+                  setVideoDuration(durationSeconds);
+                } else {
+                  setVideoDuration(null);
+                }
+                
+                // Configurar URL do vídeo para preview usando Edge Function
+                const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+                if (supabaseUrl) {
+                  setVideoUrl(`${supabaseUrl}/functions/v1/proxy-google-drive-video?fileId=${fileId}&userId=${user.id}`);
+                } else {
+                  setVideoUrl(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+                }
+              } else {
+                setVideoDuration(null);
+                setVideoUrl(null);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[VideoDetailsPage] Erro ao carregar mídia do vídeo:', err);
+      }
+    };
+
+    void loadVideoMedia();
+  }, [video, user?.id]);
+
+  // Carregar URL autenticada do vídeo quando videoUrl mudar
+  useEffect(() => {
+    // Limpar URL anterior se existir e videoUrl mudou
+    const previousUrl = previousVideoUrlRef.current;
+    if (previousUrl !== videoUrl) {
+      setAuthenticatedVideoUrl((prevUrl) => {
+        if (prevUrl && prevUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(prevUrl);
+        }
+        return null;
+      });
+      previousVideoUrlRef.current = videoUrl || null;
+    }
+
+    if (!videoUrl || !user?.id) {
+      return;
+    }
+
+    // Se já é uma blob URL (arquivo local), usar diretamente
+    if (videoUrl.startsWith('blob:')) {
+      setAuthenticatedVideoUrl(videoUrl);
+      return;
+    }
+
+    // Se é uma URL da Edge Function, precisamos adicionar autenticação
+    if (videoUrl.includes('/functions/v1/proxy-google-drive-video')) {
+      const loadAuthenticatedUrl = async () => {
+        try {
+          setLoadingVideoUrl(true);
+          const { supabaseClient } = await import('@/services/supabaseClient');
+          const {
+            data: { session },
+          } = await supabaseClient.auth.getSession();
+
+          if (session?.access_token) {
+            const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+            const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+            
+            if (supabaseUrl && supabaseAnonKey) {
+              const response = await fetch(videoUrl, {
+                headers: {
+                  Authorization: `Bearer ${session.access_token}`,
+                  apikey: supabaseAnonKey,
+                },
+              });
+
+              if (response.ok) {
+                const blob = await response.blob();
+                const blobUrl = URL.createObjectURL(blob);
+                authenticatedVideoUrlRef.current = blobUrl;
+                setAuthenticatedVideoUrl(blobUrl);
+              } else {
+                console.error('[VideoDetailsPage] Erro ao carregar vídeo:', response.status);
+                authenticatedVideoUrlRef.current = null;
+                setAuthenticatedVideoUrl(null);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[VideoDetailsPage] Erro ao obter URL autenticada:', error);
+          authenticatedVideoUrlRef.current = null;
+          setAuthenticatedVideoUrl(null);
+        } finally {
+          setLoadingVideoUrl(false);
+        }
+      };
+
+      void loadAuthenticatedUrl();
+    } else {
+      authenticatedVideoUrlRef.current = videoUrl;
+      setAuthenticatedVideoUrl(videoUrl);
+    }
+
+    // Cleanup: revogar blob URL quando componente desmontar
+    return () => {
+      const currentUrl = authenticatedVideoUrlRef.current;
+      if (currentUrl && currentUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(currentUrl);
+        authenticatedVideoUrlRef.current = null;
+      }
+    };
+  }, [videoUrl, user?.id]);
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '50vh' }}>
@@ -151,8 +337,18 @@ export const VideoDetailsPage = () => {
           startIcon={<EditIcon />}
           onClick={() => navigate(`/schedules/${id}/edit`)}
           disabled={publishingNow}
+          sx={{ mr: 1 }}
         >
           Editar
+        </Button>
+        <Button
+          variant="outlined"
+          color="error"
+          startIcon={<DeleteIcon />}
+          onClick={handleDeleteClick}
+          disabled={publishingNow || deleting}
+        >
+          Excluir
         </Button>
       </Box>
 
@@ -178,6 +374,116 @@ export const VideoDetailsPage = () => {
                   <Typography variant="body1">{video.description}</Typography>
                 </Box>
               </>
+            )}
+
+            <Divider />
+
+            {/* Preview do Vídeo */}
+            {videoThumbnail && (
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  Preview da Mídia
+                </Typography>
+                <Box
+                  sx={{
+                    position: 'relative',
+                    width: '100%',
+                    maxWidth: 600,
+                    aspectRatio: '16/9',
+                    borderRadius: 2,
+                    overflow: 'hidden',
+                    border: 1,
+                    borderColor: 'divider',
+                    bgcolor: 'action.hover',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: videoUrl ? 'pointer' : 'default',
+                    mt: 1,
+                  }}
+                  onClick={() => {
+                    if (videoUrl) {
+                      setPreviewModalOpen(true);
+                    }
+                  }}
+                >
+                  <img
+                    src={videoThumbnail}
+                    alt="Preview"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      width: 'auto',
+                      height: 'auto',
+                      objectFit: 'contain',
+                    }}
+                  />
+                  {videoUrl && (
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        bgcolor: alpha('#000', 0.4),
+                        opacity: 0,
+                        transition: 'opacity 0.2s ease-in-out',
+                        '&:hover': { opacity: 1 },
+                      }}
+                    >
+                      <Box
+                        sx={{
+                          width: 64,
+                          height: 64,
+                          borderRadius: '50%',
+                          bgcolor: alpha('#fff', 0.9),
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <PlayArrowIcon sx={{ fontSize: 40, color: 'primary.main', ml: 0.5 }} />
+                      </Box>
+                      {videoDuration !== null && (
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            bgcolor: alpha('#000', 0.7),
+                            color: 'white',
+                            px: 1,
+                            py: 0.5,
+                            borderRadius: 1,
+                            mt: 1,
+                          }}
+                        >
+                          {formatDurationFromSeconds(videoDuration)}
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+                  {videoDuration !== null && !videoUrl && (
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        bottom: 8,
+                        right: 8,
+                        bgcolor: alpha('#000', 0.7),
+                        color: 'white',
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 1,
+                      }}
+                    >
+                      <Typography variant="caption">{formatDurationFromSeconds(videoDuration)}</Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
             )}
 
             <Divider />
@@ -375,6 +681,82 @@ export const VideoDetailsPage = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Modal de Preview do Vídeo */}
+      <Dialog open={previewModalOpen} onClose={() => setPreviewModalOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">Preview do Vídeo</Typography>
+            <IconButton
+              aria-label="close"
+              onClick={() => setPreviewModalOpen(false)}
+              sx={{
+                color: (theme) => theme.palette.grey[500],
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          {loadingVideoUrl ? (
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: 400,
+              }}
+            >
+              <CircularProgress />
+            </Box>
+          ) : authenticatedVideoUrl ? (
+            <Box
+              sx={{
+                position: 'relative',
+                width: '100%',
+                aspectRatio: '16/9',
+                bgcolor: '#000',
+                borderRadius: 2,
+                overflow: 'hidden',
+              }}
+            >
+              <video
+                src={authenticatedVideoUrl}
+                controls
+                preload="metadata"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                }}
+                onError={(e) => {
+                  console.error('[VideoDetailsPage] Erro ao carregar vídeo:', e);
+                  const videoElement = e.currentTarget;
+                  if (videoElement.error) {
+                    console.error('[VideoDetailsPage] Erro do vídeo:', videoElement.error.code, videoElement.error.message);
+                  }
+                }}
+              />
+            </Box>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              URL do vídeo não disponível
+            </Typography>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="Confirmar exclusão"
+        message="Tem certeza que deseja excluir este agendamento? Esta ação não pode ser desfeita."
+        confirmLabel="Excluir"
+        cancelLabel="Cancelar"
+        confirmColor="error"
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+      />
     </Stack>
   );
 };

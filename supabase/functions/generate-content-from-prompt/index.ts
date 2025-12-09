@@ -120,6 +120,14 @@ serve(async (req) => {
     const geminiApiKey = userData.gemini_api_key;
     const openaiApiKey = userData.openai_api_key;
 
+    // Log para debug
+    console.log('API Keys configuradas:', {
+      hasGemini: !!geminiApiKey,
+      hasOpenAI: !!openaiApiKey,
+      geminiLength: geminiApiKey?.length || 0,
+      openaiLength: openaiApiKey?.length || 0,
+    });
+
     // Verificar se pelo menos uma IA está configurada
     if (!geminiApiKey && !openaiApiKey) {
       return new Response(
@@ -169,27 +177,48 @@ serve(async (req) => {
     // Chamar Gemini se configurado
     if (geminiApiKey) {
       try {
+        console.log('Chamando Gemini API...');
         const geminiResult = await callGeminiAPI(geminiApiKey, enrichedPrompt);
         response.gemini = geminiResult;
+        console.log('Gemini retornou resultado:', JSON.stringify(geminiResult));
       } catch (error) {
         console.error('Erro ao chamar Gemini:', error);
-        response.error = `Erro ao chamar Gemini: ${error instanceof Error ? error.message : 'Erro desconhecido'}`;
+        const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+        // Adicionar erro específico do Gemini na resposta
+        if (!response.error) {
+          response.error = '';
+        }
+        response.error = response.error 
+          ? `${response.error}; Erro Gemini: ${errorMessage}`
+          : `Erro Gemini: ${errorMessage}`;
+        // Também adicionar um campo específico para debug
+        (response as any).geminiError = errorMessage;
       }
+    } else {
+      console.log('Gemini API key não configurada');
     }
 
     // Chamar OpenAI se configurado
     if (openaiApiKey) {
       try {
+        console.log('Chamando OpenAI API...');
         const openaiResult = await callOpenAIAPI(openaiApiKey, enrichedPrompt);
         response.openai = openaiResult;
+        console.log('OpenAI retornou resultado:', JSON.stringify(openaiResult));
       } catch (error) {
         console.error('Erro ao chamar OpenAI:', error);
-        if (response.error) {
-          response.error += `; Erro ao chamar OpenAI: ${error instanceof Error ? error.message : 'Erro desconhecido'}`;
-        } else {
-          response.error = `Erro ao chamar OpenAI: ${error instanceof Error ? error.message : 'Erro desconhecido'}`;
+        const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+        if (!response.error) {
+          response.error = '';
         }
+        response.error = response.error 
+          ? `${response.error}; Erro OpenAI: ${errorMessage}`
+          : `Erro OpenAI: ${errorMessage}`;
+        // Também adicionar um campo específico para debug
+        (response as any).openaiError = errorMessage;
       }
+    } else {
+      console.log('OpenAI API key não configurada');
     }
 
     // Salvar histórico antes de retornar
@@ -226,8 +255,11 @@ async function callGeminiAPI(apiKey: string, prompt: string): Promise<AIResult> 
   const models = ['gemini-2.5-pro', 'gemini-1.5-pro', 'gemini-pro'];
   let lastError: Error | null = null;
 
+  console.log('Iniciando chamada Gemini API, tentando modelos:', models);
+
   for (const model of models) {
     try {
+      console.log(`Tentando modelo Gemini: ${model}`);
       const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
 
       const response = await fetch(url, {
@@ -256,20 +288,26 @@ async function callGeminiAPI(apiKey: string, prompt: string): Promise<AIResult> 
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error(`Gemini API error (${model}): ${response.status} - ${errorText}`);
         lastError = new Error(`Gemini API error (${model}): ${response.status} - ${errorText}`);
         // Se for 404, tentar próximo modelo
         if (response.status === 404) {
+          console.log(`Modelo ${model} não encontrado (404), tentando próximo...`);
           continue;
         }
         throw lastError;
       }
 
       const data = await response.json();
+      console.log(`Gemini ${model} retornou resposta, processando...`);
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (!text) {
+        console.error('Resposta vazia do Gemini');
         throw new Error('Resposta vazia do Gemini');
       }
+      
+      console.log(`Gemini ${model} retornou texto (${text.length} caracteres)`);
 
       // Tentar extrair JSON da resposta
       let jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -294,23 +332,34 @@ async function callGeminiAPI(apiKey: string, prompt: string): Promise<AIResult> 
         result = JSON.parse(cleaned);
       }
 
-      return {
+      const finalResult = {
         title: result.title || '',
         description: result.description || '',
         hashtags: Array.isArray(result.hashtags) ? result.hashtags : [],
       };
+      
+      console.log(`Gemini ${model} retornou resultado com sucesso:`, {
+        titleLength: finalResult.title.length,
+        descriptionLength: finalResult.description.length,
+        hashtagsCount: finalResult.hashtags.length,
+      });
+      
+      return finalResult;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Erro desconhecido');
       console.error(`Erro ao tentar modelo ${model}:`, error);
       // Se não for 404, parar de tentar outros modelos
       if (error instanceof Error && !error.message.includes('404') && !error.message.includes('NOT_FOUND')) {
+        console.error(`Erro não é 404, parando tentativas:`, error.message);
         throw error;
       }
       // Continuar para próximo modelo se for 404 ou NOT_FOUND
+      console.log(`Erro é 404/NOT_FOUND, continuando para próximo modelo...`);
     }
   }
 
   // Se chegou aqui, todos os modelos falharam
+  console.error('Todos os modelos do Gemini falharam:', lastError);
   throw lastError || new Error('Nenhum modelo do Gemini disponível');
 }
 

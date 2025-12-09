@@ -46,6 +46,104 @@ interface BreadcrumbItem {
   name: string;
 }
 
+interface MediaThumbnailItemProps {
+  file: GoogleDriveFile;
+  userId: string;
+  isVideo: boolean;
+  isImage: boolean;
+  onSelect: () => void;
+}
+
+const MediaThumbnailItem = ({ file, userId, isVideo, isImage, onSelect }: MediaThumbnailItemProps) => {
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadThumbnail = async () => {
+      try {
+        setLoading(true);
+        const url = await getThumbnailUrl(file.thumbnailLink, 'medium', file.id, file.mimeType, userId);
+        setThumbnailUrl(url);
+      } catch (error) {
+        console.error('[MediaThumbnailItem] Erro ao carregar thumbnail:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    void loadThumbnail();
+  }, [file.id, file.thumbnailLink, file.mimeType, userId]);
+
+  return (
+    <ImageListItem
+      sx={{ cursor: 'pointer' }}
+      onClick={onSelect}
+    >
+      {thumbnailUrl && !loading ? (
+        <img
+          src={thumbnailUrl}
+          alt={file.name}
+          loading="lazy"
+          onError={(e) => {
+            const target = e.target as HTMLImageElement;
+            target.style.display = 'none';
+            const parent = target.parentElement;
+            if (parent) {
+              const fallback = document.createElement('div');
+              fallback.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 150px; background-color: rgba(0,0,0,0.04); border-radius: 4px;';
+              const iconSvg = isVideo 
+                ? '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>'
+                : '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>';
+              fallback.innerHTML = iconSvg;
+              parent.appendChild(fallback);
+            }
+          }}
+          style={{
+            width: '100%',
+            height: 150,
+            objectFit: 'cover',
+          }}
+        />
+      ) : (
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            height: 150,
+            bgcolor: 'action.hover',
+            borderRadius: 1,
+          }}
+        >
+          {loading ? (
+            <CircularProgress size={32} />
+          ) : isVideo ? (
+            <VideoFileIcon sx={{ fontSize: 64, color: 'primary.main' }} />
+          ) : (
+            <ImageIcon sx={{ fontSize: 64, color: 'primary.main' }} />
+          )}
+        </Box>
+      )}
+      <ImageListItemBar
+        title={file.name}
+        subtitle={
+          file.size
+            ? `${(file.size / 1024 / 1024).toFixed(1)} MB`
+            : undefined
+        }
+        sx={{
+          '& .MuiImageListItemBar-title': {
+            fontSize: '0.75rem',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          },
+        }}
+      />
+    </ImageListItem>
+  );
+};
+
 export const GoogleDriveBrowser = ({
   open,
   onClose,
@@ -251,78 +349,16 @@ export const GoogleDriveBrowser = ({
               {media.map((file) => {
                 const isVideo = file.mimeType?.startsWith('video/');
                 const isImage = file.mimeType?.startsWith('image/');
-                // Tentar obter thumbnail usando fileId e mimeType como fallback
-                const thumbnailUrl = getThumbnailUrl(file.thumbnailLink, 'medium', file.id, file.mimeType);
                 
                 return (
-                  <ImageListItem
+                  <MediaThumbnailItem
                     key={file.id}
-                    sx={{ cursor: 'pointer' }}
-                    onClick={() => handleMediaSelect(file)}
-                  >
-                    {thumbnailUrl ? (
-                      <img
-                        src={thumbnailUrl}
-                        alt={file.name}
-                        loading="lazy"
-                        onError={(e) => {
-                          // Se a imagem falhar ao carregar, mostrar ícone padrão
-                          // Não tentar obter thumbnail autenticada pois causa CORS no frontend
-                          const target = e.target as HTMLImageElement;
-                          target.style.display = 'none';
-                          const parent = target.parentElement;
-                          if (parent) {
-                            const fallback = document.createElement('div');
-                            fallback.style.cssText = 'display: flex; flex-direction: column; align-items: center; justify-content: center; height: 150px; background-color: rgba(0,0,0,0.04); border-radius: 4px;';
-                            const iconSvg = isVideo 
-                              ? '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>'
-                              : '<svg style="font-size: 64px; color: #1976d2;" viewBox="0 0 24 24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>';
-                            fallback.innerHTML = iconSvg;
-                            parent.appendChild(fallback);
-                          }
-                        }}
-                        style={{
-                          width: '100%',
-                          height: 150,
-                          objectFit: 'cover',
-                        }}
-                      />
-                    ) : (
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          height: 150,
-                          bgcolor: 'action.hover',
-                          borderRadius: 1,
-                        }}
-                      >
-                        {isVideo ? (
-                          <VideoFileIcon sx={{ fontSize: 64, color: 'primary.main' }} />
-                        ) : (
-                          <ImageIcon sx={{ fontSize: 64, color: 'primary.main' }} />
-                        )}
-                      </Box>
-                    )}
-                    <ImageListItemBar
-                      title={file.name}
-                      subtitle={
-                        file.size
-                          ? `${(file.size / 1024 / 1024).toFixed(1)} MB`
-                          : undefined
-                      }
-                      sx={{
-                        '& .MuiImageListItemBar-title': {
-                          fontSize: '0.75rem',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        },
-                      }}
-                    />
-                  </ImageListItem>
+                    file={file}
+                    userId={userId}
+                    isVideo={isVideo}
+                    isImage={isImage}
+                    onSelect={() => handleMediaSelect(file)}
+                  />
                 );
               })}
             </ImageList>

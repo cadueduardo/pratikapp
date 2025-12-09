@@ -28,10 +28,14 @@ interface Video {
   id: string;
   user_id: string;
   title: string;
+  description?: string | null;
   url_drive: string;
   scheduled_date: string;
   status: string;
   selected_platform_ids?: string[] | null;
+  platform_hashtags?: Record<string, string[]> | null;
+  platform_media_types?: Record<string, string> | null;
+  custom_thumbnail_url?: string | null;
 }
 
 interface Platform {
@@ -69,9 +73,8 @@ serve(async (req) => {
     const now = new Date().toISOString();
     const { data: videos, error: videosError } = await supabase
       .from('videos')
-      .select('*')
-      .in('status', ['scheduled', 'pending'])
-      .lte('scheduled_date', now)
+      .select('id, user_id, title, description, url_drive, scheduled_date, status, selected_platform_ids, platform_hashtags, platform_media_types, custom_thumbnail_url')
+      .or(`status.eq.pending,and(status.eq.scheduled,scheduled_date.lte.${now})`)
       .order('scheduled_date', { ascending: true });
 
     if (videosError) {
@@ -79,6 +82,15 @@ serve(async (req) => {
     }
 
     if (!videos || videos.length === 0) {
+      console.log(`[process-scheduled-videos] Nenhum vídeo encontrado. Query: status IN ('scheduled', 'pending'), scheduled_date <= ${now}`);
+      // Verificar se há vídeos pending sem a condição de data para debug
+      const { data: pendingVideos } = await supabase
+        .from('videos')
+        .select('id, title, status, scheduled_date')
+        .in('status', ['scheduled', 'pending'])
+        .limit(5);
+      console.log(`[process-scheduled-videos] Vídeos pending/scheduled encontrados (sem filtro de data):`, pendingVideos);
+      
       return new Response(
         JSON.stringify({ message: 'Nenhum vídeo agendado encontrado', processed: 0 }),
         {
@@ -216,6 +228,47 @@ serve(async (req) => {
                 break;
               }
               case 'youtube': {
+                // Extrair hashtags do YouTube se existirem
+                let tags: string[] | undefined = undefined;
+                let descriptionWithHashtags = video.description || '';
+                
+                if (video.platform_hashtags && typeof video.platform_hashtags === 'object') {
+                  const youtubeHashtags = video.platform_hashtags['youtube'] || video.platform_hashtags['YouTube'];
+                  if (Array.isArray(youtubeHashtags) && youtubeHashtags.length > 0) {
+                    // Remover o # das hashtags para tags (YouTube aceita tags sem #)
+                    tags = youtubeHashtags.map(tag => tag.replace(/^#/, ''));
+                    
+                    // Adicionar hashtags no final da descrição (com #)
+                    const hashtagsText = youtubeHashtags.join(' ');
+                    if (descriptionWithHashtags) {
+                      descriptionWithHashtags += '\n\n' + hashtagsText;
+                    } else {
+                      descriptionWithHashtags = hashtagsText;
+                    }
+                  }
+                }
+
+                // Verificar se é YouTube Shorts
+                let isShorts = false;
+                if (video.platform_media_types && typeof video.platform_media_types === 'object') {
+                  const youtubeMediaType = video.platform_media_types['youtube'] || video.platform_media_types['YouTube'];
+                  if (youtubeMediaType === 'youtube-shorts') {
+                    isShorts = true;
+                    // Adicionar #Shorts na descrição (YouTube identifica Shorts por isso)
+                    if (descriptionWithHashtags && !descriptionWithHashtags.includes('#Shorts')) {
+                      descriptionWithHashtags = '#Shorts\n\n' + descriptionWithHashtags;
+                    } else if (!descriptionWithHashtags) {
+                      descriptionWithHashtags = '#Shorts';
+                    }
+                  }
+                }
+
+                console.log(`[process-scheduled-videos] Fazendo upload para YouTube:`, {
+                  isShorts,
+                  tagsCount: tags?.length || 0,
+                  hasCustomThumbnail: !!video.custom_thumbnail_url,
+                });
+
                 const uploadResponse = await fetch(`${supabaseUrl}/functions/v1/upload-to-youtube`, {
                   method: 'POST',
                   headers: {
@@ -226,10 +279,13 @@ serve(async (req) => {
                   body: JSON.stringify({
                     videoUrl: video.url_drive,
                     title: video.title,
-                    description: video.description || undefined,
+                    description: descriptionWithHashtags || undefined,
+                    tags: tags,
                     privacyStatus: 'public',
                     platformId: platform.id,
                     userId: video.user_id, // Passar userId para chamadas internas
+                    customThumbnailUrl: video.custom_thumbnail_url || undefined,
+                    isShorts: isShorts,
                   }),
                 });
 

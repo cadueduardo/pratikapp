@@ -21,6 +21,7 @@ const mapVideo = (row: VideoRow): Video => ({
   mediaType: (row.media_type as string | null) || null,
   platformMediaTypes: (row.platform_media_types as Record<string, string> | null) || null,
   platformHashtags: ((row as any).platform_hashtags as Record<string, string[]> | null) || null,
+  customThumbnailUrl: ((row as any).custom_thumbnail_url as string | null) || null,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -69,7 +70,7 @@ export const videosRepository = {
         .single();
     }
 
-    const insertPayload: VideoInsert & { platform_hashtags?: Record<string, string[]> | null } = {
+    const insertPayload: VideoInsert & { platform_hashtags?: Record<string, string[]> | null; custom_thumbnail_url?: string | null } = {
       user_id: payload.userId,
       title: payload.title,
       description: payload.description ?? null,
@@ -80,6 +81,7 @@ export const videosRepository = {
       media_type: payload.mediaType ?? null,
       platform_media_types: payload.platformMediaTypes ?? null,
       platform_hashtags: payload.platformHashtags ?? null,
+      custom_thumbnail_url: payload.customThumbnailUrl ?? null,
     };
 
     const response = await supabaseClient.from('videos').insert(insertPayload).select('*').single();
@@ -93,7 +95,7 @@ export const videosRepository = {
   },
 
   async update(id: string, payload: UpdateVideo): RepositoryResult<Video> {
-    const updates: VideoUpdateRow & { platform_hashtags?: Record<string, string[]> | null } = {};
+    const updates: VideoUpdateRow & { platform_hashtags?: Record<string, string[]> | null; custom_thumbnail_url?: string | null } = {};
     if (payload.title !== undefined) {
       updates.title = payload.title;
     }
@@ -120,6 +122,9 @@ export const videosRepository = {
     }
     if (payload.platformHashtags !== undefined) {
       updates.platform_hashtags = payload.platformHashtags ?? null;
+    }
+    if (payload.customThumbnailUrl !== undefined) {
+      updates.custom_thumbnail_url = payload.customThumbnailUrl ?? null;
     }
 
     if (Object.keys(updates).length === 0) {

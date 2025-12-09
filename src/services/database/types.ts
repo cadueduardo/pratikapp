@@ -44,6 +44,7 @@ export interface Video {
   mediaType?: string | null; // Tipo de mídia principal (ex: instagram-reels, youtube-shorts)
   platformMediaTypes?: Record<string, string> | null; // Mapeamento de tipo de mídia por plataforma (ex: {youtube: "youtube-shorts", instagram: "instagram-reels"})
   platformHashtags?: Record<string, string[]> | null; // Hashtags por plataforma (ex: {tiktok: ["#tag1"], "youtube": ["#tag2"]})
+  customThumbnailUrl?: string | null; // URL da capa personalizada armazenada no Supabase Storage
   createdAt: string;
   updatedAt: string;
 }
@@ -59,6 +60,7 @@ export interface NewVideo {
   mediaType?: string | null;
   platformMediaTypes?: Record<string, string> | null;
   platformHashtags?: Record<string, string[]> | null;
+  customThumbnailUrl?: string | null;
 }
 
 export interface UpdateVideo {
@@ -71,6 +73,7 @@ export interface UpdateVideo {
   mediaType?: string | null;
   platformMediaTypes?: Record<string, string> | null;
   platformHashtags?: Record<string, string[]> | null;
+  customThumbnailUrl?: string | null;
 }
 
 export interface Platform {

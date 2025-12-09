@@ -141,6 +141,20 @@ export async function generateContentFromPrompt(
 
   const result = await response.json();
 
+  // Log para debug
+  console.log('[AI Generation] Resultado completo:', {
+    hasGemini: !!result.gemini,
+    hasOpenAI: !!result.openai,
+    error: result.error,
+    geminiError: (result as any).geminiError,
+    openaiError: (result as any).openaiError,
+  });
+
+  // Se houver erro mas também resultados, mostrar o erro no console
+  if (result.error) {
+    console.warn('[AI Generation] Erros durante geração:', result.error);
+  }
+
   // Buscar o ID da geração salva no histórico (última inserção)
   let generationId: string | undefined;
   try {

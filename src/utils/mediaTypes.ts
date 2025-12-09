@@ -255,5 +255,51 @@ export const groupMediaTypesByPlatform = (
   return grouped;
 };
 
+/**
+ * Obtém o aspect ratio primário de um tipo de mídia
+ * Se houver múltiplos aspect ratios, retorna o primeiro
+ */
+export const getPrimaryAspectRatio = (mediaType: MediaType): string | undefined => {
+  const info = MEDIA_TYPE_INFO[mediaType];
+  if (info?.aspectRatio) {
+    // Se houver múltiplos, pega o primeiro
+    return info.aspectRatio.split(',')[0].trim();
+  }
+  return undefined;
+};
 
+/**
+ * Converte uma string de aspect ratio (ex: "16:9") para um número (ex: 16/9)
+ * Se houver múltiplos aspect ratios, usa o primeiro
+ */
+export const aspectRatioToNumber = (aspectRatioString: string | undefined): number | undefined => {
+  if (!aspectRatioString) return undefined;
+  const parts = aspectRatioString.split(':');
+  if (parts.length === 2) {
+    const width = parseFloat(parts[0]);
+    const height = parseFloat(parts[1]);
+    if (!isNaN(width) && !isNaN(height) && height !== 0) {
+      return width / height;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Obtém o aspect ratio a partir de uma lista de tipos de mídia
+ * Retorna o primeiro aspect ratio válido encontrado
+ */
+export const getAspectRatioFromMediaTypes = (
+  mediaTypes: (MediaType | null | undefined)[],
+): string | undefined => {
+  for (const mediaType of mediaTypes) {
+    if (mediaType) {
+      const aspectRatio = getPrimaryAspectRatio(mediaType);
+      if (aspectRatio) {
+        return aspectRatio;
+      }
+    }
+  }
+  return undefined;
+};
 

@@ -1,0 +1,17 @@
+{
+  "name": "PratikApp",
+  "short_name": "PratikApp",
+  "description": "Aplicativo de agendamento e publicação de vídeos",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1565d8",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
+

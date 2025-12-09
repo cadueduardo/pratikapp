@@ -17,6 +17,11 @@ export interface GoogleDriveFile {
   webViewLink?: string;
   thumbnailLink?: string;
   parents?: string[];
+  videoMediaMetadata?: {
+    durationMillis?: string; // Duração em milissegundos
+    width?: string;
+    height?: string;
+  };
 }
 
 interface GoogleDriveAuthResult {
@@ -406,7 +411,7 @@ export const getFileMetadata = async (userId: string, fileId: string): Promise<G
   }
 
   const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,parents`,
+    `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,parents,videoMediaMetadata`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -434,28 +439,73 @@ export const getFileMetadata = async (userId: string, fileId: string): Promise<G
  * @param size - Tamanho do thumbnail ('low', 'medium', 'high')
  * @returns URL do thumbnail
  */
-export const getThumbnailUrl = (
+/**
+ * Obtém URL do thumbnail de um arquivo do Google Drive
+ * Usa Edge Function para fazer proxy e evitar problemas de CORS
+ * @param thumbnailLink - URL do thumbnail do Google Drive (opcional)
+ * @param size - Tamanho do thumbnail ('low', 'medium', 'high')
+ * @param fileId - ID do arquivo no Google Drive (obrigatório para funcionar corretamente)
+ * @param mimeType - Tipo MIME do arquivo (opcional)
+ * @param userId - ID do usuário (obrigatório para usar Edge Function)
+ * @returns URL do thumbnail (blob URL ou URL direta) ou null se não disponível
+ */
+export const getThumbnailUrl = async (
   thumbnailLink: string | undefined,
   size: 'low' | 'medium' | 'high' = 'low',
   fileId?: string,
   mimeType?: string,
-): string | null => {
-  // Priorizar usar fileId com a URL de thumbnail do Google Drive que funciona no frontend
-  // Isso evita problemas de CORS com lh3.googleusercontent.com
-  if (fileId) {
-    const sizeMap = {
-      low: 200,
-      medium: 400,
-      high: 800,
-    };
-    
-    // Usar o endpoint de thumbnail do Google Drive que funciona no frontend
-    // Formato: https://drive.google.com/thumbnail?id=FILE_ID&sz=w400-h400
-    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${sizeMap[size]}-h${sizeMap[size]}`;
+  userId?: string,
+): Promise<string | null> => {
+  // Se temos fileId e userId, usar Edge Function para fazer proxy
+  // Isso resolve problemas de CORS e funciona com arquivos privados
+  if (fileId && userId) {
+    try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      
+      if (supabaseUrl && supabaseAnonKey) {
+        // Obter token de autenticação
+        const { supabaseClient } = await import('./supabaseClient');
+        const {
+          data: { session },
+        } = await supabaseClient.auth.getSession();
+
+        if (session?.access_token) {
+          const sizeMap = {
+            low: 200,
+            medium: 400,
+            high: 800,
+          };
+          
+          // Buscar thumbnail via Edge Function com autenticação
+          const functionUrl = `${supabaseUrl}/functions/v1/get-google-drive-thumbnail?fileId=${fileId}&size=${sizeMap[size]}`;
+          
+          const response = await fetch(functionUrl, {
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: supabaseAnonKey,
+            },
+          });
+
+          if (response.ok) {
+            // Criar blob URL a partir da resposta
+            const blob = await response.blob();
+            return URL.createObjectURL(blob);
+          } else {
+            if (import.meta.env.DEV) {
+              console.warn('[Google Drive] Erro ao buscar thumbnail via Edge Function:', response.status, response.statusText);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.warn('[Google Drive] Erro ao obter URL do thumbnail via Edge Function:', error);
+      }
+    }
   }
 
-  // Se não temos fileId mas temos thumbnailLink, tentar usar (pode falhar por CORS)
-  // Mas é melhor ter fileId sempre que possível
+  // Fallback: tentar usar thumbnailLink direto (pode falhar por CORS)
   if (thumbnailLink) {
     const sizes = {
       low: 'w200-h200-p-k-nu',
@@ -483,6 +533,16 @@ export const getThumbnailUrl = (
       }
       return thumbnailLink;
     }
+  }
+
+  // Último fallback: tentar usar drive.google.com/thumbnail (pode não funcionar para arquivos privados)
+  if (fileId) {
+    const sizeMap = {
+      low: 200,
+      medium: 400,
+      high: 800,
+    };
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w${sizeMap[size]}-h${sizeMap[size]}`;
   }
 
   return null;
