@@ -7,6 +7,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import SortIcon from '@mui/icons-material/Sort';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import PublishIcon from '@mui/icons-material/Publish';
+import DriveFolderUploadIcon from '@mui/icons-material/DriveFolderUpload';
 import {
   Box,
   Button,
@@ -632,16 +633,28 @@ export const SchedulesPage = () => {
         <Typography variant="h4" component="h1" fontWeight={700}>
           Agendamentos
         </Typography>
-        <Tooltip title="Criar um novo agendamento de vídeo">
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => handleDialogOpen()}
-            disabled={loading}
-          >
-            Novo agendamento
-          </Button>
-        </Tooltip>
+        <Stack direction="row" spacing={2}>
+          <Tooltip title="Importar múltiplos vídeos do Google Drive">
+            <Button
+              variant="outlined"
+              startIcon={<DriveFolderUploadIcon />}
+              onClick={() => navigate('/schedules/batch-import')}
+              disabled={loading}
+            >
+              Importação em Lote
+            </Button>
+          </Tooltip>
+          <Tooltip title="Criar um novo agendamento de vídeo">
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => handleDialogOpen()}
+              disabled={loading}
+            >
+              Novo agendamento
+            </Button>
+          </Tooltip>
+        </Stack>
       </Box>
 
       <Card>

@@ -14,12 +14,6 @@ export interface AIGeneratedContent {
   hashtags: string[];
 }
 
-export interface GenerateContentOptions {
-  fileId: string; // ID do arquivo no Google Drive
-  userId: string; // ID do usuário
-  context?: string; // Contexto opcional (será buscado do banco se não fornecido)
-}
-
 export interface GenerateFromPromptOptions {
   prompt: string; // Prompt do usuário descrevendo o vídeo
   userId: string; // ID do usuário
@@ -29,65 +23,6 @@ export interface GenerateFromPromptResult {
   gemini?: AIGeneratedContent;
   openai?: AIGeneratedContent;
   generationId?: string; // ID do registro no histórico
-}
-
-/**
- * Gera conteúdo (título, descrição, hashtags) para um vídeo do Google Drive
- */
-export async function generateVideoContent(
-  options: GenerateContentOptions,
-): Promise<AIGeneratedContent> {
-  const { fileId, userId, context } = options;
-
-  if (!fileId || !userId) {
-    throw new Error('fileId e userId são obrigatórios');
-  }
-
-  // Obter URL da Edge Function
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  if (!supabaseUrl) {
-    throw new Error('VITE_SUPABASE_URL não configurada');
-  }
-
-  const functionUrl = `${supabaseUrl}/functions/v1/analyze-video-with-ai`;
-
-  // Obter token de autenticação
-  const {
-    data: { session },
-  } = await supabaseClient.auth.getSession();
-
-  if (!session?.access_token) {
-    throw new Error('Usuário não autenticado');
-  }
-
-  // Chamar Edge Function
-  const response = await fetch(functionUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.access_token}`,
-      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY || '',
-    },
-    body: JSON.stringify({
-      fileId,
-      userId,
-      context,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({ error: 'Erro desconhecido' }));
-    throw new Error(errorData.error || `Erro ao gerar conteúdo: ${response.statusText}`);
-  }
-
-  const result: AIGeneratedContent = await response.json();
-
-  // Validar resultado
-  if (!result.title || !result.description || !Array.isArray(result.hashtags)) {
-    throw new Error('Resposta inválida da IA');
-  }
-
-  return result;
 }
 
 /**

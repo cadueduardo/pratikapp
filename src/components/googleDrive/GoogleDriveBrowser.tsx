@@ -9,6 +9,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import {
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -39,6 +40,9 @@ interface GoogleDriveBrowserProps {
   onClose: () => void;
   onSelect: (file: GoogleDriveFile) => void;
   userId: string;
+  multiSelect?: boolean; // Modo seleção múltipla
+  selectedFiles?: GoogleDriveFile[]; // Arquivos já selecionados (controlado externamente)
+  onSelectionChange?: (files: GoogleDriveFile[]) => void; // Callback quando seleção muda
 }
 
 interface BreadcrumbItem {
@@ -51,10 +55,22 @@ interface MediaThumbnailItemProps {
   userId: string;
   isVideo: boolean;
   isImage: boolean;
-  onSelect: () => void;
+  onSelect?: () => void; // Opcional - só usado em modo único
+  multiSelect?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-const MediaThumbnailItem = ({ file, userId, isVideo, isImage, onSelect }: MediaThumbnailItemProps) => {
+const MediaThumbnailItem = ({ 
+  file, 
+  userId, 
+  isVideo, 
+  isImage, 
+  onSelect, 
+  multiSelect = false,
+  isSelected = false,
+  onToggleSelect 
+}: MediaThumbnailItemProps) => {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -73,11 +89,77 @@ const MediaThumbnailItem = ({ file, userId, isVideo, isImage, onSelect }: MediaT
     void loadThumbnail();
   }, [file.id, file.thumbnailLink, file.mimeType, userId]);
 
+  const handleClick = (e: React.MouseEvent) => {
+    // Sempre prevenir propagação e comportamento padrão
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Em modo múltiplo, NUNCA chamar onSelect, apenas toggle da seleção
+    if (multiSelect) {
+      if (onToggleSelect) {
+        onToggleSelect();
+      }
+      // NÃO chamar onSelect em modo múltiplo para não fechar o modal
+      return;
+    }
+    // Modo único: selecionar e fechar (só se onSelect existir)
+    if (onSelect) {
+      onSelect();
+    }
+  };
+
   return (
     <ImageListItem
-      sx={{ cursor: 'pointer' }}
-      onClick={onSelect}
+      sx={{ 
+        cursor: 'pointer',
+        position: 'relative',
+        border: isSelected ? '2px solid' : '2px solid transparent',
+        borderColor: isSelected ? 'primary.main' : 'transparent',
+        borderRadius: 1,
+      }}
+      onClick={handleClick}
     >
+      {/* Checkbox no modo seleção múltipla */}
+      {multiSelect && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 8,
+            left: 8,
+            zIndex: 2,
+            bgcolor: 'background.paper',
+            borderRadius: '50%',
+          }}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (onToggleSelect) {
+              onToggleSelect();
+            }
+          }}
+        >
+          <Checkbox
+            checked={isSelected}
+            onChange={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (onToggleSelect) {
+                onToggleSelect();
+              }
+            }}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            sx={{
+              color: 'primary.main',
+              '&.Mui-checked': {
+                color: 'primary.main',
+              },
+            }}
+          />
+        </Box>
+      )}
       {thumbnailUrl && !loading ? (
         <img
           src={thumbnailUrl}
@@ -144,11 +226,49 @@ const MediaThumbnailItem = ({ file, userId, isVideo, isImage, onSelect }: MediaT
   );
 };
 
+// Chave para salvar última pasta no localStorage
+const getLastFolderKey = (userId: string) => `googleDrive_lastFolder_${userId}`;
+
+// Interface para salvar estado da última pasta
+interface LastFolderState {
+  folderId?: string;
+  breadcrumbs: BreadcrumbItem[];
+}
+
+// Função para salvar última pasta acessada
+const saveLastFolder = (userId: string, folderId: string | undefined, breadcrumbs: BreadcrumbItem[]) => {
+  try {
+    const state: LastFolderState = {
+      folderId,
+      breadcrumbs,
+    };
+    localStorage.setItem(getLastFolderKey(userId), JSON.stringify(state));
+  } catch (error) {
+    console.warn('[GoogleDriveBrowser] Erro ao salvar última pasta:', error);
+  }
+};
+
+// Função para carregar última pasta acessada
+const loadLastFolder = (userId: string): LastFolderState | null => {
+  try {
+    const saved = localStorage.getItem(getLastFolderKey(userId));
+    if (saved) {
+      return JSON.parse(saved) as LastFolderState;
+    }
+  } catch (error) {
+    console.warn('[GoogleDriveBrowser] Erro ao carregar última pasta:', error);
+  }
+  return null;
+};
+
 export const GoogleDriveBrowser = ({
   open,
   onClose,
   onSelect,
   userId,
+  multiSelect = false,
+  selectedFiles = [],
+  onSelectionChange,
 }: GoogleDriveBrowserProps) => {
   const { showError } = useNotification();
   const [loading, setLoading] = useState(false);
@@ -158,9 +278,47 @@ export const GoogleDriveBrowser = ({
   const [currentFolderId, setCurrentFolderId] = useState<string | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  
+  // Estado interno para seleção múltipla (quando não é controlado externamente)
+  const [internalSelectedFiles, setInternalSelectedFiles] = useState<GoogleDriveFile[]>([]);
+  
+  // Em modo múltiplo, sempre usar estado interno para permitir seleção sem fechar o modal
+  // selectedFiles externo é usado apenas para inicializar a seleção quando o modal abre
+  // Em modo único, usar selectedFiles se fornecido (modo controlado)
+  const currentSelectedFiles = multiSelect
+    ? internalSelectedFiles
+    : (onSelectionChange ? (selectedFiles || []) : internalSelectedFiles);
+  
+  // Função para atualizar seleção
+  // IMPORTANTE: Em modo múltiplo, não chamar onSelectionChange imediatamente
+  // Isso permite que o usuário selecione múltiplos arquivos sem fechar o modal
+  // onSelectionChange só será chamado quando o usuário clicar em "Selecionar"
+  const updateSelection = useCallback((files: GoogleDriveFile[]) => {
+    console.log('[GoogleDriveBrowser] Atualizando seleção:', {
+      filesCount: files.length,
+      hasOnSelectionChange: !!onSelectionChange,
+      fileIds: files.map(f => f.id),
+      isMultiSelect: multiSelect,
+    });
+    
+    // Em modo múltiplo, sempre usar estado interno para não fechar o modal
+    // onSelectionChange será chamado apenas em handleConfirmSelection
+    if (multiSelect) {
+      setInternalSelectedFiles(files);
+      // Se onSelectionChange existe, também atualizar selectedFiles externo
+      // mas sem fechar o modal (isso é responsabilidade do componente pai)
+      // Na verdade, em modo múltiplo, não devemos chamar onSelectionChange aqui
+      // porque isso pode fechar o modal no componente pai
+    } else if (onSelectionChange) {
+      // Modo único: chamar onSelectionChange imediatamente
+      onSelectionChange(files);
+    } else {
+      setInternalSelectedFiles(files);
+    }
+  }, [onSelectionChange, multiSelect]);
 
   const loadFolder = useCallback(
-    async (folderId?: string) => {
+    async (folderId?: string, newBreadcrumbs?: BreadcrumbItem[]) => {
       if (!userId) return;
 
       try {
@@ -174,6 +332,15 @@ export const GoogleDriveBrowser = ({
         setFolders(foldersData);
         setMedia(mediaData);
         setCurrentFolderId(folderId);
+        
+        // Atualizar breadcrumbs se fornecido
+        if (newBreadcrumbs) {
+          setBreadcrumbs(newBreadcrumbs);
+        }
+        
+        // Salvar última pasta acessada
+        const breadcrumbsToSave = newBreadcrumbs || breadcrumbs;
+        saveLastFolder(userId, folderId, breadcrumbsToSave);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Erro ao carregar pasta';
         showError(errorMessage);
@@ -181,7 +348,7 @@ export const GoogleDriveBrowser = ({
         setLoading(false);
       }
     },
-    [userId, showError],
+    [userId, showError, breadcrumbs],
   );
 
   const handleSearch = useCallback(
@@ -224,29 +391,56 @@ export const GoogleDriveBrowser = ({
 
   useEffect(() => {
     if (open && userId) {
-      loadFolder();
       setSearchQuery('');
-      setBreadcrumbs([{ name: 'Meu Drive' }]);
-      setCurrentFolderId(undefined);
+      
+      // Em modo múltiplo, inicializar estado interno com selectedFiles se fornecido
+      // Isso permite manter a seleção quando o modal reabre
+      if (multiSelect) {
+        if (selectedFiles && selectedFiles.length > 0) {
+          // Sincronizar estado interno com selectedFiles externo
+          setInternalSelectedFiles(selectedFiles);
+        } else {
+          // Limpar seleção se não houver arquivos selecionados
+          setInternalSelectedFiles([]);
+        }
+      }
+      
+      // Tentar carregar última pasta acessada
+      const lastFolder = loadLastFolder(userId);
+      
+      if (lastFolder && lastFolder.folderId) {
+        // Carregar última pasta acessada
+        setBreadcrumbs(lastFolder.breadcrumbs);
+        void loadFolder(lastFolder.folderId, lastFolder.breadcrumbs);
+      } else {
+        // Começar na raiz (Meu Drive)
+        setBreadcrumbs([{ name: 'Meu Drive' }]);
+        void loadFolder(undefined, [{ name: 'Meu Drive' }]);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, userId]); // Removido loadFolder das dependências para evitar loop infinito
+  }, [open, userId, multiSelect]); // Removido onSelectionChange e selectedFiles das dependências para evitar re-renders desnecessários
 
   const handleFolderClick = async (folder: GoogleDriveFile) => {
     const newBreadcrumbs = [...breadcrumbs, { id: folder.id, name: folder.name }];
-    setBreadcrumbs(newBreadcrumbs);
-    await loadFolder(folder.id);
+    await loadFolder(folder.id, newBreadcrumbs);
   };
 
   const handleBreadcrumbClick = async (index: number) => {
     const newBreadcrumbs = breadcrumbs.slice(0, index + 1);
-    setBreadcrumbs(newBreadcrumbs);
     const targetFolder = newBreadcrumbs[index];
-    await loadFolder(targetFolder.id);
+    await loadFolder(targetFolder.id, newBreadcrumbs);
   };
 
   const handleMediaSelect = async (file: GoogleDriveFile) => {
-    // Buscar metadados completos incluindo thumbnail
+    // IMPORTANTE: Em modo múltiplo, NUNCA fechar o modal
+    if (multiSelect) {
+      // Em modo múltiplo, apenas toggle da seleção usando handleToggleSelect
+      handleToggleSelect(file);
+      return;
+    }
+    
+    // Modo único: selecionar e fechar
     try {
       const fullMetadata = await getFileMetadata(userId, file.id);
       if (fullMetadata) {
@@ -257,15 +451,78 @@ export const GoogleDriveBrowser = ({
         onClose();
       }
     } catch (err) {
-      // Se falhar, usar os dados que já temos
       onSelect(file);
       onClose();
     }
   };
+  
+  const handleToggleSelect = useCallback((file: GoogleDriveFile) => {
+    // Não usar async aqui para evitar problemas de concorrência
+    if (multiSelect) {
+      // Em modo múltiplo, sempre usar estado interno
+      const isSelected = internalSelectedFiles.some(f => f.id === file.id);
+      let newSelection: GoogleDriveFile[];
+      
+      console.log('[GoogleDriveBrowser] Toggle seleção:', {
+        fileId: file.id,
+        fileName: file.name,
+        isSelected,
+        currentCount: internalSelectedFiles.length,
+        currentFileIds: internalSelectedFiles.map(f => f.id),
+      });
+      
+      if (isSelected) {
+        newSelection = internalSelectedFiles.filter(f => f.id !== file.id);
+      } else {
+        newSelection = [...internalSelectedFiles, file];
+      }
+      
+      console.log('[GoogleDriveBrowser] Nova seleção:', {
+        count: newSelection.length,
+        fileIds: newSelection.map(f => f.id),
+      });
+      
+      updateSelection(newSelection);
+    } else {
+      void handleMediaSelect(file);
+    }
+  }, [multiSelect, internalSelectedFiles, updateSelection, handleMediaSelect]);
+  
+  const handleConfirmSelection = () => {
+    console.log('[GoogleDriveBrowser] Confirmando seleção:', {
+      filesCount: currentSelectedFiles.length,
+      fileIds: currentSelectedFiles.map(f => f.id),
+      hasOnSelectionChange: !!onSelectionChange,
+    });
+    
+    if (onSelectionChange && currentSelectedFiles.length > 0) {
+      onSelectionChange(currentSelectedFiles);
+      onClose();
+    } else if (!onSelectionChange && currentSelectedFiles.length > 0) {
+      // Modo não controlado - usar estado interno
+      console.log('[GoogleDriveBrowser] Modo não controlado, usando estado interno');
+    }
+  };
 
+
+  // Handler para fechar o modal - em modo múltiplo, só fecha se for explicitamente cancelado
+  const handleDialogClose = useCallback((event: object, reason: string) => {
+    // Em modo múltiplo, não permitir fechar clicando no backdrop ou pressionando ESC
+    // Só permitir fechar através do botão "Cancelar" ou "Selecionar"
+    if (multiSelect && (reason === 'backdropClick' || reason === 'escapeKeyDown')) {
+      return;
+    }
+    onClose();
+  }, [multiSelect, onClose]);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+    <Dialog 
+      open={open} 
+      onClose={handleDialogClose} 
+      maxWidth="md" 
+      fullWidth
+      disableEscapeKeyDown={multiSelect} // Desabilitar ESC em modo múltiplo
+    >
       <DialogTitle>
         <Stack direction="row" alignItems="center" spacing={1}>
           <Typography variant="h6">Selecionar mídia do Google Drive</Typography>
@@ -349,6 +606,7 @@ export const GoogleDriveBrowser = ({
               {media.map((file) => {
                 const isVideo = file.mimeType?.startsWith('video/');
                 const isImage = file.mimeType?.startsWith('image/');
+                const isSelected = currentSelectedFiles.some(f => f.id === file.id);
                 
                 return (
                   <MediaThumbnailItem
@@ -357,7 +615,10 @@ export const GoogleDriveBrowser = ({
                     userId={userId}
                     isVideo={isVideo}
                     isImage={isImage}
-                    onSelect={() => handleMediaSelect(file)}
+                    onSelect={multiSelect ? undefined : () => handleMediaSelect(file)}
+                    multiSelect={multiSelect}
+                    isSelected={isSelected}
+                    onToggleSelect={() => handleToggleSelect(file)}
                   />
                 );
               })}
@@ -378,7 +639,25 @@ export const GoogleDriveBrowser = ({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Cancelar</Button>
+        {multiSelect ? (
+          <>
+            <Typography sx={{ flexGrow: 1, ml: 2 }}>
+              {currentSelectedFiles.length > 0 
+                ? `${currentSelectedFiles.length} arquivo${currentSelectedFiles.length > 1 ? 's' : ''} selecionado${currentSelectedFiles.length > 1 ? 's' : ''}`
+                : 'Nenhum arquivo selecionado'}
+            </Typography>
+            <Button onClick={onClose}>Cancelar</Button>
+            <Button 
+              variant="contained" 
+              onClick={handleConfirmSelection}
+              disabled={currentSelectedFiles.length === 0}
+            >
+              Selecionar {currentSelectedFiles.length > 0 ? `(${currentSelectedFiles.length})` : ''}
+            </Button>
+          </>
+        ) : (
+          <Button onClick={onClose}>Cancelar</Button>
+        )}
       </DialogActions>
     </Dialog>
   );

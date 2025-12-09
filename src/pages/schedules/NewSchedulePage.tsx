@@ -38,7 +38,6 @@ import { ThumbnailUploader } from '@/components/schedules/ThumbnailUploader';
 import { GoogleDriveBrowser } from '@/components/googleDrive/GoogleDriveBrowser';
 import { useAuth } from '@/hooks/useAuth';
 import { platformsRepository, usersRepository, videosRepository, postsRepository } from '@/services/database';
-import { generateVideoContent } from '@/services/aiGeneration';
 import type { Platform, VideoStatus } from '@/services/database/types';
 import type { GoogleDriveFile } from '@/services/googleDrive';
 import { extractFileIdFromUrl, getFileMetadata, getThumbnailUrl, isAuthenticated } from '@/services/googleDrive';
@@ -490,33 +489,8 @@ export const NewSchedulePage = () => {
 
       // Limpar erro de URL
       setFormErrors((prev) => ({ ...prev, urlDrive: undefined }));
-
-      // Gerar conteúdo automaticamente se habilitado (em background, não bloquear UI)
-      if (aiAutoGenerate && user?.id && file.id) {
-        // Executar em background sem bloquear a UI
-        generateVideoContent({
-          fileId: file.id,
-          userId: user.id,
-        })
-          .then((result) => {
-            setTitle(result.title);
-            setDescription(result.description);
-            // Adicionar hashtags à descrição se não estiverem já incluídas
-            if (result.hashtags.length > 0) {
-              const hashtagsText = result.hashtags.join(' ');
-              if (!result.description.includes(hashtagsText)) {
-                setDescription(`${result.description}\n\n${hashtagsText}`);
-              }
-            }
-            showSuccess('Conteúdo gerado automaticamente pela IA!');
-          })
-          .catch((err) => {
-            // Não mostrar erro - apenas logar, pois é opcional
-            console.warn('Erro ao gerar conteúdo automaticamente:', err);
-          });
-      }
     },
-    [title, aiAutoGenerate, user?.id, showSuccess, customThumbnailUrl],
+    [title, user?.id, showSuccess, customThumbnailUrl],
   );
 
   // Buscar thumbnail quando URL for alterada manualmente
